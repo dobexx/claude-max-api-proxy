@@ -2,7 +2,7 @@
  * Admin endpoints: in-container re-authentication of the Claude CLI.
  *
  * Flow (no container/SSH access needed):
- *   1. POST /admin/relogin/start   → spawns `claude auth login --no-browser`
+ *   1. POST /admin/relogin/start   → spawns `claude auth login`
  *      inside the container, parses the OAuth URL from its output and
  *      returns it. The admin opens the URL in any browser and authorizes.
  *   2. POST /admin/relogin/complete { code } → pastes the authorization
@@ -60,7 +60,7 @@ export function createAdminRouter(): Router {
 
   /**
    * POST /admin/relogin/start
-   * Starts `claude auth login --no-browser` in the container and returns
+   * Starts `claude auth login` in the container and returns
    * the URL the admin must open in a browser.
    */
   router.post("/relogin/start", (_req, res) => {
@@ -73,7 +73,7 @@ export function createAdminRouter(): Router {
 
     let proc: ChildProcess;
     try {
-      proc = spawn("claude", ["auth", "login", "--no-browser"], {
+      proc = spawn("claude", ["auth", "login"], {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {

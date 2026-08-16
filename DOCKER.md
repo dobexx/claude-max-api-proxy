@@ -96,7 +96,7 @@ volumes:
 
 ## Re-Login ohne Container-Zugriff
 
-Läuft die Anmeldung ab (oder beim ersten Start), bekommst du im Chat eine entsprechende Nachricht. Die Neuanmeldung läuft komplett über die Admin-API – der Login-Prozess (`claude auth login --no-browser`) startet **im Container**, du klickst nur im Browser:
+Läuft die Anmeldung ab (oder beim ersten Start), bekommst du im Chat eine entsprechende Nachricht. Die Neuanmeldung läuft komplett über die Admin-API – der Login-Prozess (`claude auth login`) startet **im Container**, du klickst nur im Browser:
 
 ```bash
 # 1. Login-Flow starten - Antwort enthält die OAuth-URL
