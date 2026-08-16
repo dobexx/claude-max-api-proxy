@@ -6,7 +6,7 @@
 
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
-import { ClaudeSubprocess } from "../subprocess/manager.js";
+import { ClaudeSubprocess, stageImages, cleanupImages } from "../subprocess/manager.js";
 import { openaiToCli, openaiToCliDelta } from "../adapter/openai-to-cli.js";
 import {
   cliResultToOpenai,
@@ -42,6 +42,8 @@ function resolveCliInput(body: OpenAIChatRequest): {
   if (existing) {
     const cliInput = openaiToCliDelta(body, existing.messageCount);
     cliInput.sessionId = existing.claudeSessionId;
+    // Effort is per-request, not per-session: honor it on resumed turns too
+    cliInput.effort = openaiToCli(body).effort;
     return { cliInput, sessionKey, resume: true };
   }
 
@@ -83,10 +85,30 @@ export async function handleChatCompletions(
     const subprocess = new ClaudeSubprocess();
     const sessionCtx: SessionContext = { sessionKey, resume, messageCount: body.messages.length };
 
-    if (stream) {
-      await handleStreamingResponse(req, res, subprocess, cliInput, requestId, sessionCtx);
-    } else {
-      await handleNonStreamingResponse(res, subprocess, cliInput, requestId, sessionCtx);
+    // Stage attached images (OpenAI image_url blocks) as temp files and point
+    // the prompt at them - Claude Code reads them via its Read tool
+    let stagedImages: string[] = [];
+    if (cliInput.images && cliInput.images.length > 0) {
+      stagedImages = await stageImages(cliInput.images);
+      delete cliInput.images; // don't hold base64 in memory longer than needed
+      if (stagedImages.length > 0) {
+        const listing = stagedImages.map((p, i) => `${i + 1}. ${p}`).join("\n");
+        cliInput.prompt =
+          `[Attached images - use your Read tool on each file to view them]\n${listing}\n\n` +
+          cliInput.prompt;
+      }
+    }
+
+    try {
+      if (stream) {
+        await handleStreamingResponse(req, res, subprocess, cliInput, requestId, sessionCtx);
+      } else {
+        await handleNonStreamingResponse(res, subprocess, cliInput, requestId, sessionCtx);
+      }
+    } finally {
+      if (stagedImages.length > 0) {
+        await cleanupImages(stagedImages);
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -293,6 +315,13 @@ async function handleStreamingResponse(
             completion_tokens: result.usage.output_tokens || 0,
             total_tokens:
               (result.usage.input_tokens || 0) + (result.usage.output_tokens || 0),
+            // Prompt caching is automatic in Claude Code - surface the metrics
+            ...(result.usage.cache_read_input_tokens
+              ? { cache_read_input_tokens: result.usage.cache_read_input_tokens }
+              : {}),
+            ...(result.usage.cache_creation_input_tokens
+              ? { cache_creation_input_tokens: result.usage.cache_creation_input_tokens }
+              : {}),
           };
         }
         res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
@@ -345,6 +374,7 @@ async function handleStreamingResponse(
       model: cliInput.model,
       sessionId: cliInput.sessionId,
       resume: sessionCtx.resume,
+      effort: cliInput.effort,
     }).catch((err) => {
       console.error("[Streaming] Subprocess start error:", err);
       reject(err);
@@ -430,6 +460,7 @@ async function handleNonStreamingResponse(
         model: cliInput.model,
         sessionId: cliInput.sessionId,
         resume: sessionCtx.resume,
+        effort: cliInput.effort,
       })
       .catch((error) => {
         res.status(500).json({

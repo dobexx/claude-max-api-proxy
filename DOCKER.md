@@ -5,6 +5,9 @@ Dieser Fork erweitert das Original um drei Dinge:
 1. **Dockerfile** – Multi-Stage-Build inkl. Claude Code CLI, Non-Root-User, Healthcheck
 2. **API-Key-Authentifizierung** – OpenAI-kompatibel via `Authorization: Bearer <key>`
 3. **`.env`-Unterstützung** – Konfiguration über Umgebungsvariablen oder `.env`-Datei
+4. **Bild-Support (Vision)** – `image_url`-Blöcke (Base64-Data-URLs wie von OpenWebUI, oder http(s)-URLs) werden als Temp-Dateien bereitgestellt; Claude liest sie über sein Read-Tool. Automatisches Aufräumen nach jedem Request, Limit 20 MB pro Bild
+5. **Reasoning Effort** – `reasoning_effort` oder `effort` im Request (`low`/`medium`/`high`/`xhigh`/`max`) wird als `--effort`-Flag an die CLI durchgereicht
+6. **Cache-Metriken** – Claude Code cached Prompts automatisch; der Proxy reichert `usage` um `cache_read_input_tokens`/`cache_creation_input_tokens` an, damit Einsparungen sichtbar sind
 
 Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem anderen Docker-Host) betreiben.
 
@@ -44,7 +47,27 @@ curl -X POST https://deine-domain/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <PROXY_API_KEY>" \
   -d '{"model": "claude-sonnet-4", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+# Mit Reasoning Effort + Bild
+curl -X POST https://deine-domain/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <PROXY_API_KEY>" \
+  -d '{
+    "model": "claude-opus-5",
+    "reasoning_effort": "high",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Was steht in diesem Dokument?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+      ]
+    }]
+  }'
 ```
+
+**Modelle:** `claude-opus-5`, `claude-sonnet-5`, `claude-opus-4(-6)`, `claude-sonnet-4(-5/-6)`, `claude-haiku-4(-5)` sowie die Aliase `opus`/`sonnet`/`haiku`. Intern mappen alle auf die CLI-Familie – die konkrete Version bestimmt die installierte CLI (immer aktuell halten: `claude update`).
+
+**Hinweis Bilder:** Der Umweg über Temp-Dateien kostet einen zusätzlichen Tool-Call (Read). Kurze Bild-Fragen funktionieren gut; bei sehr vielen Bildern pro Konversation steigt der Token-Verbrauch entsprechend.
 
 In OpenWebUI, Continue.dev o. ä. als OpenAI-Endpoint eintragen:
 - **Base URL:** `https://deine-domain/v1`
