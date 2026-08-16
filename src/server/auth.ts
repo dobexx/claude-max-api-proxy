@@ -135,7 +135,8 @@ export function apiKeyAuth(
   }
 
   // Health check stays public (uptime monitors, EasyPanel checks)
-  if (req.path === "/health") {
+  // Admin routes handle their own (stricter) auth via adminAuth
+  if (req.path === "/health" || req.path.startsWith("/admin")) {
     next();
     return;
   }
