@@ -77,6 +77,8 @@ export interface OpenAIChatResponse {
 export interface OpenAIChatChunkDelta {
   role?: "assistant";
   content?: string;
+  /** Extended thinking stream (OpenWebUI renders this as a collapsible section) */
+  reasoning?: string;
   tool_calls?: OpenAIToolCallChunk[];
 }
 
