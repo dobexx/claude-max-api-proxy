@@ -24,6 +24,7 @@ import {
   isToolUseBlockStart,
   isInputJsonDelta,
   isContentBlockStop,
+  isThinkingDelta,
 } from "../types/claude-cli.js";
 import type { ClaudeModel, CliImage, ClaudeEffort } from "../adapter/openai-to-cli.js";
 import os from "os";
