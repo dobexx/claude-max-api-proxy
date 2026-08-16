@@ -2,6 +2,8 @@
 
 > Actively maintained fork of [atalovesyou/claude-max-api-proxy](https://github.com/atalovesyou/claude-max-api-proxy) with OpenClaw integration, improved streaming, and expanded model support.
 
+> **This fork** ([dobexx/claude-max-api-proxy](https://github.com/dobexx/claude-max-api-proxy)) adds **Docker support, API key authentication, and `.env` configuration** for server deployments (e.g. EasyPanel). See [DOCKER.md](DOCKER.md).
+
 **Use your existing Claude Code subscription (Pro, Max, or Team) with any OpenAI-compatible client — no separate API costs!**
 
 This proxy wraps the Claude Code CLI as a subprocess and exposes an OpenAI-compatible HTTP API, allowing tools like OpenClaw, Continue.dev, or any OpenAI-compatible client to use your Claude subscription instead of paying per-API-call. It works with any subscription tier that Claude Code itself supports — Pro, Max, or Team — not just Max.
@@ -216,6 +218,10 @@ src/
 │   └── standalone.ts      # Entry point
 └── index.ts               # Package exports
 ```
+
+## API Key Authentication
+
+When `PROXY_API_KEY` is set, all endpoints (except `/health`) require `Authorization: Bearer <key>`. Without configuration a random key is generated at startup and printed to the logs. See [DOCKER.md](DOCKER.md) for details.
 
 ## Security
 
