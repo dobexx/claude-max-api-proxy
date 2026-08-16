@@ -55,13 +55,6 @@ function extractUrl(text: string): string | null {
   return m ? m[0] : null;
 }
 
-/**
- * Detect whether the CLI is waiting for the authorization code on stdin.
- */
-function awaitsCode(text: string): boolean {
-  return /code|paste|enter/i.test(text);
-}
-
 export function createAdminRouter(): Router {
   const router = Router();
 
@@ -202,6 +195,11 @@ export function createAdminRouter(): Router {
       console.log(`[Admin] Relogin completed: ${current.state}`);
       if (!res.headersSent) {
         res.status(exitCode === 0 ? 200 : 502).json({ state: current.state, detail: current.detail });
+      }
+      // Clean up the session after responding - on success the CLI output may
+      // contain account details we don't want to keep in memory
+      if (session === current) {
+        session = null;
       }
     };
 
