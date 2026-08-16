@@ -18,7 +18,7 @@
  */
 
 import { Router } from "express";
-import { spawn, ChildProcess } from "child_process";
+import { spawn, execFile, ChildProcess } from "child_process";
 
 type ReloginState = "idle" | "awaiting_code" | "success" | "failed";
 
@@ -232,5 +232,67 @@ export function createAdminRouter(): Router {
     res.json({ state: "idle" });
   });
 
+  /**
+   * GET /admin/usage
+   * Subscription usage as reported by the CLI itself ("claude --print /usage").
+   * Answers directly from the CLI, costs no API tokens. Cached for 60s.
+   */
+  router.get("/usage", (_req, res) => {
+    const now = Date.now();
+    if (usageCache && now - usageCache.at < 60_000) {
+      res.json({ ...usageCache.data, cached: true });
+      return;
+    }
+
+    execFile(
+      "claude",
+      ["--print", "/usage"],
+      { timeout: 20_000, maxBuffer: 64 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          res.status(502).json({
+            error: {
+              message: `Usage query failed: ${stderr?.toString().trim() || err.message}`,
+              type: "server_error",
+              code: null,
+            },
+          });
+          return;
+        }
+        res.json({ ...parseUsage(stdout.toString()), cached: false });
+      }
+    );
+  });
+
   return router;
+}
+
+let usageCache: { at: number; data: Record<string, unknown> } | null = null;
+
+/**
+ * Parse the plain-text output of "claude --print /usage" into structured data.
+ * Format (CLI 2.1.x), lines like:
+ *   Current session: 3% used · resets Aug 16, 5:50pm (UTC)
+ *   Current week (all models): 7% used · resets Aug 19, 9am (UTC)
+ */
+function parseUsage(text: string): Record<string, unknown> {
+  const result: Record<string, unknown> = { raw: text.trim() };
+  const lineRe =
+    /^(Current session|Current week(?: \(([^)]+)\))?)\s*:\s*(\d+)% used(?:\s*·\s*resets (.+))?$/i;
+
+  for (const line of text.split("\n")) {
+    const m = line.trim().match(lineRe);
+    if (!m) continue;
+    const scope = m[2] ? m[2].toLowerCase().replace(/\s+/g, "_") : null;
+    const key = m[1].toLowerCase().startsWith("current session")
+      ? "session"
+      : scope
+        ? `week_${scope}`
+        : "week_all_models";
+    result[key] = {
+      percent_used: Number(m[3]),
+      ...(m[4] ? { resets: m[4].trim() } : {}),
+    };
+  }
+  return result;
 }
