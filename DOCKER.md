@@ -28,8 +28,8 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 2. **Environment-Variablen** setzen:
    - `PROXY_API_KEY` – dein geheimer Key (z. B. `openssl rand -hex 32`)
    - `HOST=0.0.0.0` und `PORT=3456` sind im Image bereits voreingestellt
-3. **Volume anlegen:** Mount-Pfad `/data` – dort liegen die Claude-Credentials (`/data/.claude`). **Ohne Volume geht die Authentifizierung bei jedem Redeploy verloren.**
-4. **Claude-Credentials hinterlegen:** Lokal einmal `claude auth login` ausführen, dann den Inhalt von `~/.claude` in das Volume kopieren (per `scp` auf den Server oder über das EasyPanel-Terminal in den Container).
+3. **Volume anlegen (Pflicht!):** Mount-Pfad **`/data`** – dort liegen die Claude-Credentials (`/data/.claude`). Das ist der **einzige** Pfad, der persistent sein muss; Tokens werden bei jeder Nutzung automatisch erneuert und dorthin zurückgeschrieben. **Ohne Volume ist die Anmeldung nach jedem Redeploy/Neustart weg.**
+4. **Erst-Anmeldung:** Einfach den Dienst starten und einmal den Re-Login-Flow durchlaufen (siehe unten) – kein manuelles Kopieren von Credentials nötig.
 5. **Domain** auf den Dienst zeigen, Port **3456** – SSL übernimmt EasyPanel.
 
 ## Testen
@@ -90,6 +90,37 @@ services:
 volumes:
   claude-auth:
 ```
+
+## Re-Login ohne Container-Zugriff
+
+Läuft die Anmeldung ab (oder beim ersten Start), bekommst du im Chat eine entsprechende Nachricht. Die Neuanmeldung läuft komplett über die Admin-API – der Login-Prozess (`claude auth login --no-browser`) startet **im Container**, du klickst nur im Browser:
+
+```bash
+# 1. Login-Flow starten - Antwort enthält die OAuth-URL
+curl -X POST https://deine-domain/admin/relogin/start \
+  -H "Authorization: Bearer <PROXY_ADMIN_KEY>"
+
+# 2. URL im Browser öffnen, autorisieren, Code kopieren
+
+# 3. Code zurückschicken - CLI schreibt frische Tokens ins Volume
+curl -X POST https://deine-domain/admin/relogin/complete \
+  -H "Authorization: Bearer <PROXY_ADMIN_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "dein-code-aus-dem-browser"}'
+
+# Zwischendurch Status prüfen
+curl https://deine-domain/admin/relogin/status \
+  -H "Authorization: Bearer <PROXY_ADMIN_KEY>"
+```
+
+Der Flow läuft nach 10 Minuten ab (Sicherheits-Timeout). Die Admin-Endpunkte verlangen `PROXY_ADMIN_KEY` – ist der nicht gesetzt, gilt `PROXY_API_KEY`. **Empfehlung:** einen separaten, stärkeren Admin-Key setzen, damit normale API-Nutzer keinen Relogin auslösen können.
+
+### Mounts im Überblick
+
+| Pfad | Typ | Zweck |
+|---|---|---|
+| `/data` | **Volume (Pflicht)** | Claude-Credentials (`/data/.claude`) – überlebt Neustarts/Redeploys; Tokens erneuern sich hier automatisch |
+| alles andere | ephemeral | Image, Code, Temp-Dateien – darf bei jedem Deploy neu entstehen |
 
 ## ⚠️ Hinweis zu Kosten & Limits
 

@@ -52,6 +52,63 @@ export function isAuthEnabled(): boolean {
   return authEnabled;
 }
 
+let configuredAdminKey: string | null = null;
+
+/**
+ * Initialize the optional admin key (PROXY_ADMIN_KEY).
+ * Falls back to the regular API key when no dedicated admin key is set.
+ * Returns the same shape as initApiKey for startup logging.
+ */
+export function initAdminKey(): { configured: boolean; fallback: boolean } {
+  const raw = process.env.PROXY_ADMIN_KEY?.trim();
+  if (raw) {
+    configuredAdminKey = raw;
+    return { configured: true, fallback: false };
+  }
+  return { configured: false, fallback: true };
+}
+
+/**
+ * Express middleware for /admin/* routes.
+ * Requires PROXY_ADMIN_KEY; if unset, the regular PROXY_API_KEY is accepted.
+ * If neither exists, admin routes are locked (403).
+ */
+export function adminAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  const effective = configuredAdminKey || configuredKey;
+
+  if (!effective) {
+    res.status(403).json({
+      error: {
+        message:
+          "Admin endpoints are locked. Set PROXY_ADMIN_KEY (or PROXY_API_KEY) to enable them.",
+        type: "invalid_request_error",
+        code: "admin_locked",
+      },
+    });
+    return;
+  }
+
+  const header = req.headers.authorization;
+  const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : null;
+
+  if (!token || !safeEqual(token, effective)) {
+    res.status(401).json({
+      error: {
+        message: "Invalid admin key.",
+        type: "invalid_request_error",
+        code: "invalid_admin_key",
+      },
+    });
+    return;
+  }
+
+  next();
+}
+
 /**
  * Constant-time string comparison to avoid timing attacks.
  */

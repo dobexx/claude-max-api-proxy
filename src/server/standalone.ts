@@ -11,7 +11,7 @@
 import { readFileSync } from "fs";
 import { startServer, stopServer } from "./index.js";
 import { verifyClaude, verifyAuth } from "../subprocess/manager.js";
-import { initApiKey } from "./auth.js";
+import { initApiKey, initAdminKey } from "./auth.js";
 
 /**
  * Minimal .env loader: only sets variables that are not already present in
@@ -77,6 +77,13 @@ async function main(): Promise<void> {
   } else {
     console.log("[Auth] WARNING: API key authentication DISABLED (PROXY_API_KEY=off)");
     console.log("[Auth] Only do this for local development!\n");
+  }
+
+  const adminStatus = initAdminKey();
+  if (adminStatus.configured) {
+    console.log("[Auth] Admin endpoints (/admin/*): ENABLED (dedicated PROXY_ADMIN_KEY)");
+  } else if (keyStatus.enabled) {
+    console.log("[Auth] Admin endpoints (/admin/*): ENABLED (falls back to PROXY_API_KEY)");
   }
 
   // Verify Claude CLI

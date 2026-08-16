@@ -24,10 +24,13 @@ import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "
 const AUTH_EXPIRED_MESSAGE = [
   "Die Claude-Anmeldung auf dem Server ist abgelaufen – Anfragen sind derzeit nicht moeglich.",
   "",
-  "So wird sie erneuert (ca. 2 Minuten):",
-  "1. Auf einem Rechner mit Browser `claude auth login` ausfuehren (Claude Code CLI) und die Anmeldung bestaetigen.",
-  "2. Den Ordner ~/.claude in das Server-Volume kopieren (Mount-Pfad /data), z. B. per scp oder ueber das EasyPanel-Terminal.",
-  "3. Danach funktioniert dieser Chat sofort wieder – kein Neustart noetig.",
+  "Neuanmeldung direkt ueber die Admin-API (kein Server-Zugriff noetig):",
+  "1. `POST /admin/relogin/start` (mit Admin-Key) – die Antwort enthaelt eine Login-URL.",
+  "2. URL im Browser oeffnen und die Anmeldung bestaetigen.",
+  "3. Den angezeigten Code per `POST /admin/relogin/complete` zurueckschicken.",
+  "4. Danach funktioniert dieser Chat sofort wieder – die neuen Tokens liegen persistent im Volume.",
+  "",
+  "Details: siehe DOCKER.md, Abschnitt 'Re-Login ohne Container-Zugriff'.",
 ].join("\n");
 
 /** Build an OpenAI-style assistant message body (non-streaming) */
