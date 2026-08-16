@@ -24,14 +24,15 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 
-# Non-root user for the proxy process
-RUN useradd --create-home --shell /bin/bash proxy \
+# Non-root user for the proxy process. Note: node:*-slim images already
+# ship a system user named "proxy", so we use a distinct name.
+RUN useradd --create-home --shell /bin/bash proxyapp \
   && mkdir -p /data/.claude \
-  && chown -R proxy:proxy /data /app
-USER proxy
+  && chown -R proxyapp:proxyapp /data /app
+USER proxyapp
 
 # Claude CLI config/credentials live here - mount a volume on /data
-ENV HOME=/home/proxy \
+ENV HOME=/home/proxyapp \
     CLAUDE_CONFIG_DIR=/data/.claude \
     HOST=0.0.0.0 \
     PORT=3456
