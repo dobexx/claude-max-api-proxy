@@ -280,6 +280,27 @@ async function handleStreamingResponse(
       }
     });
 
+    // Extended thinking: forward as OpenAI-style reasoning chunks
+    // (OpenWebUI renders delta.reasoning as a collapsible "thinking" section)
+    subprocess.on("thinking_delta", (event: ClaudeCliStreamEvent) => {
+      const delta = event.event.delta;
+      const text = (delta?.type === "thinking_delta" && delta.thinking) || "";
+      if (text && !res.writableEnded) {
+        const chunk = {
+          id: `chatcmpl-${requestId}`,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: lastModel,
+          choices: [{
+            index: 0,
+            delta: { reasoning: text },
+            finish_reason: null,
+          }],
+        };
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      }
+    });
+
     // Handle streaming content deltas
     subprocess.on("content_delta", (event: ClaudeCliStreamEvent) => {
       const delta = event.event.delta;

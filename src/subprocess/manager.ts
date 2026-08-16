@@ -456,6 +456,9 @@ export class ClaudeSubprocess extends EventEmitter {
         if (isContentDelta(message)) {
           // Emit content delta for streaming (text_delta only)
           this.emit("content_delta", message as ClaudeCliStreamEvent);
+        } else if (isThinkingDelta(message)) {
+          // Extended thinking stream (visible when effort > default)
+          this.emit("thinking_delta", message as unknown as ClaudeCliStreamEvent);
         } else if (isAssistantMessage(message)) {
           this.emit("assistant", message);
         } else if (isResultMessage(message)) {
