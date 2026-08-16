@@ -33,6 +33,7 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 3. **Volume anlegen (Pflicht!):** Mount-Pfad **`/data`** – dort liegen die Claude-Credentials (`/data/.claude`). Das ist der **einzige** Pfad, der persistent sein muss; Tokens werden bei jeder Nutzung automatisch erneuert und dorthin zurückgeschrieben. **Ohne Volume ist die Anmeldung nach jedem Redeploy/Neustart weg.**
 4. **Erst-Anmeldung:** Einfach den Dienst starten und einmal den Re-Login-Flow durchlaufen (siehe unten) – kein manuelles Kopieren von Credentials nötig.
 5. **Domain** auf den Dienst zeigen, Port **3456** – SSL übernimmt EasyPanel.
+6. **Einmalig einloggen:** Beim ersten Start ist das Volume leer – Chat-Requests beantwortet der Proxy dann mit einer Anleitung statt einer Fehlermeldung. Einmal den Re-Login-Flow durchlaufen (siehe nächster Abschnitt), danach funktioniert alles dauerhaft – auch über Neustarts und Redeploys hinweg.
 
 ## Testen
 

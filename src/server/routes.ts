@@ -6,6 +6,7 @@
 
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import { existsSync, readdirSync } from "fs";
 import { ClaudeSubprocess, stageImages, cleanupImages } from "../subprocess/manager.js";
 import { openaiToCli, openaiToCliDelta } from "../adapter/openai-to-cli.js";
 import {
@@ -15,6 +16,21 @@ import {
 import { getSession, setSession, clearSession } from "../subprocess/session-store.js";
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
+
+/**
+ * Check whether Claude CLI credentials exist at all. On a fresh container
+ * with an empty /data volume, every request would otherwise run into the
+ * CLI's onboarding/login failure - we can answer that upfront instead.
+ */
+function hasClaudeCredentials(): boolean {
+  const dir = process.env.CLAUDE_CONFIG_DIR || `${process.env.HOME}/.claude`;
+  try {
+    if (!existsSync(dir)) return false;
+    return readdirSync(dir).some((f) => f.endsWith(".json"));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * User-facing guidance when the Claude CLI's OAuth session has expired.
@@ -112,6 +128,35 @@ export async function handleChatCompletions(
           code: "invalid_messages",
         },
       });
+      return;
+    }
+
+    // Fresh container without any login: answer upfront instead of
+    // letting the request run into the CLI's onboarding failure
+    if (!hasClaudeCredentials()) {
+      console.error("[Auth] No Claude credentials found - prompting admin to run the relogin flow");
+      const guidance = authExpiredResponse(requestId, "claude-sonnet-4");
+      if (stream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders();
+        const chunk = {
+          id: guidance.id,
+          object: "chat.completion.chunk",
+          created: guidance.created,
+          model: guidance.model,
+          choices: [
+            { index: 0, delta: { role: "assistant", content: guidance.choices[0].message.content }, finish_reason: null },
+            { index: 0, delta: {}, finish_reason: "stop" },
+          ],
+        };
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+      } else {
+        res.json(guidance);
+      }
       return;
     }
 

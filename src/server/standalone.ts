@@ -8,9 +8,9 @@
  *   node dist/server/standalone.js [port]
  */
 
-import { readFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import { startServer, stopServer } from "./index.js";
-import { verifyClaude, verifyAuth } from "../subprocess/manager.js";
+import { verifyClaude } from "../subprocess/manager.js";
 import { initApiKey, initAdminKey } from "./auth.js";
 
 /**
@@ -95,15 +95,26 @@ async function main(): Promise<void> {
   }
   console.log(`  Claude CLI: ${cliCheck.version || "OK"}`);
 
-  // Verify authentication
+  // Check for credentials. The CLI can also store them in the OS keychain,
+  // which we can't inspect - so a missing config dir is a warning, not fatal.
   console.log("Checking authentication...");
-  const authCheck = await verifyAuth();
-  if (!authCheck.ok) {
-    console.error(`Error: ${authCheck.error}`);
-    console.error("Please run: claude auth login");
-    process.exit(1);
+  const configDir = process.env.CLAUDE_CONFIG_DIR || `${process.env.HOME}/.claude`;
+  let hasCredentials = false;
+  try {
+    hasCredentials =
+      existsSync(configDir) && readdirSync(configDir).some((f) => f.endsWith(".json"));
+  } catch {
+    hasCredentials = false;
   }
-  console.log("  Authentication: OK\n");
+  if (hasCredentials) {
+    console.log("  Credentials: found\n");
+  } else {
+    console.log("  Credentials: NOT FOUND");
+    console.log("  The server will start anyway, but chat requests will return a");
+    console.log("  guidance message until you log in via the admin API:");
+    console.log("    POST /admin/relogin/start  ->  open URL in browser");
+    console.log("    POST /admin/relogin/complete  ->  submit the code\n");
+  }
 
   // Start server
   try {
