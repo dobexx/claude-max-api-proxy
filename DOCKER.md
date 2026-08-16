@@ -16,6 +16,7 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 | Variable | Default | Beschreibung |
 |---|---|---|
 | `PROXY_API_KEY` | *(generiert)* | API-Key, den Clients als Bearer-Token mitschicken müssen. Ohne Konfiguration wird beim Start ein zufälliger Key generiert und **einmalig ins Log geschrieben**. `off` deaktiviert Auth (nur lokal!). |
+| `PROXY_ADMIN_KEY` | *(fällt auf `PROXY_API_KEY` zurück)* | Key für die Admin-Endpunkte `/admin/*` (Re-Login-Flow). **Empfehlung: separaten, starken Key setzen**, damit normale API-Nutzer keinen Relogin auslösen können. Weder Admin- noch API-Key gesetzt → Admin-Endpunkte gesperrt (403). |
 | `PORT` | `3456` | Port des HTTP-Servers |
 | `HOST` | `127.0.0.1` lokal / `0.0.0.0` im Docker-Image | Bind-Adresse |
 | `DEBUG` | – | `1` aktiviert Request-Logging |
@@ -26,7 +27,8 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 
 1. **Neuer Dienst** → Typ „App" → Quelle: **GitHub-Repository** → dieses Repo auswählen. EasyPanel erkennt das Dockerfile automatisch (Build-Typ „Dockerfile").
 2. **Environment-Variablen** setzen:
-   - `PROXY_API_KEY` – dein geheimer Key (z. B. `openssl rand -hex 32`)
+   - `PROXY_API_KEY` – dein geheimer API-Key (z. B. `openssl rand -hex 32`)
+   - `PROXY_ADMIN_KEY` – separater Key für `/admin/*` (Re-Login). Ebenfalls stark wählen; ohne ihn gilt `PROXY_API_KEY` auch für Admin-Endpunkte
    - `HOST=0.0.0.0` und `PORT=3456` sind im Image bereits voreingestellt
 3. **Volume anlegen (Pflicht!):** Mount-Pfad **`/data`** – dort liegen die Claude-Credentials (`/data/.claude`). Das ist der **einzige** Pfad, der persistent sein muss; Tokens werden bei jeder Nutzung automatisch erneuert und dorthin zurückgeschrieben. **Ohne Volume ist die Anmeldung nach jedem Redeploy/Neustart weg.**
 4. **Erst-Anmeldung:** Einfach den Dienst starten und einmal den Re-Login-Flow durchlaufen (siehe unten) – kein manuelles Kopieren von Credentials nötig.
