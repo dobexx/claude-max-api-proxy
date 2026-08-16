@@ -38,6 +38,8 @@ export interface SubprocessOptions {
   timeout?: number;
   /** Reasoning effort passed through to the CLI via --effort */
   effort?: ClaudeEffort;
+  /** Disable all built-in CLI tools (when the client provides its own tool list) */
+  disableBuiltinTools?: boolean;
   /** Images to stage as temp files so Claude can Read them */
   images?: CliImage[];
 }
@@ -404,6 +406,12 @@ export class ClaudeSubprocess extends EventEmitter {
 
     if (options.effort) {
       args.push("--effort", options.effort);
+    }
+
+    // Client-provided tools (OpenAI function calling): the CLI must NOT execute
+    // anything itself - no Bash, no Read, nothing. Execution happens client-side.
+    if (options.disableBuiltinTools) {
+      args.push("--tools", "");
     }
 
     if (options.sessionId && options.resume) {
