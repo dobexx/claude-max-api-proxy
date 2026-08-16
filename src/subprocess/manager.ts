@@ -64,6 +64,28 @@ export interface SubprocessEvents {
 const DEFAULT_TIMEOUT = 900000; // 15 minutes
 
 /**
+ * Detect authentication/authorization failures from CLI stderr or exit codes.
+ * The CLI surfaces expired OAuth tokens as 401/authentication_error text on
+ * stderr (there is no structured error type in stream-json), so we match the
+ * known signatures.
+ */
+export function isAuthError(stderr: string, exitCode: number | null): boolean {
+  if (exitCode === 401) return true;
+  const text = stderr.toLowerCase();
+  return (
+    text.includes("authentication_error") ||
+    text.includes("authentication failed") ||
+    (text.includes("401") && text.includes("unauthorized")) ||
+    text.includes("oauth token has expired") ||
+    text.includes("token expired") ||
+    text.includes("invalid oauth token") ||
+    (text.includes("not logged in") && text.includes("claude")) ||
+    text.includes("please run /login") ||
+    text.includes("please run claude auth login")
+  );
+}
+
+/**
  * Stage request images as temp files so the CLI can read them via the Read tool.
  * Returns absolute file paths. Caller is responsible for cleanup.
  * Remote URLs are downloaded (5s timeout, bounded size).
@@ -261,6 +283,8 @@ function killProcessTree(
 export class ClaudeSubprocess extends EventEmitter {
   private process: ChildProcess | null = null;
   private buffer: string = "";
+  private stderrBuffer: string = "";
+  private exitCode: number | null = null;
   private timeoutId: NodeJS.Timeout | null = null;
   private isKilled: boolean = false;
 
@@ -322,10 +346,12 @@ export class ClaudeSubprocess extends EventEmitter {
           this.processBuffer();
         });
 
-        // Capture stderr for debugging
+        // Capture stderr for debugging and auth-error detection
         this.process.stderr?.on("data", (chunk: Buffer) => {
           const errorText = chunk.toString().trim();
           if (errorText) {
+            // Keep a bounded tail (4 KB) - enough for error signatures
+            this.stderrBuffer = (this.stderrBuffer + errorText + "\n").slice(-4096);
             // Don't emit as error unless it's actually an error
             // Claude CLI may write debug info to stderr
             if (process.env.DEBUG_SUBPROCESS) {
@@ -336,6 +362,7 @@ export class ClaudeSubprocess extends EventEmitter {
 
         // Handle process close
         this.process.on("close", (code) => {
+          this.exitCode = code;
           if (process.env.DEBUG_SUBPROCESS) {
             console.error(`[Subprocess] Process closed with code: ${code}`);
           }
@@ -459,6 +486,14 @@ export class ClaudeSubprocess extends EventEmitter {
       this.clearTimeout();
       this.isKilled = killProcessTree(this.process, signal);
     }
+  }
+
+  /**
+   * True if the subprocess failed due to an authentication problem
+   * (expired OAuth token, logged out). Check after "close"/"error".
+   */
+  hasAuthError(): boolean {
+    return isAuthError(this.stderrBuffer, this.exitCode);
   }
 
   /**

@@ -16,6 +16,38 @@ import { getSession, setSession, clearSession } from "../subprocess/session-stor
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
 
+/**
+ * User-facing guidance when the Claude CLI's OAuth session has expired.
+ * Returned as a normal assistant message instead of a raw 500 so the user
+ * sees actionable steps directly in their chat client.
+ */
+const AUTH_EXPIRED_MESSAGE = [
+  "Die Claude-Anmeldung auf dem Server ist abgelaufen – Anfragen sind derzeit nicht moeglich.",
+  "",
+  "So wird sie erneuert (ca. 2 Minuten):",
+  "1. Auf einem Rechner mit Browser `claude auth login` ausfuehren (Claude Code CLI) und die Anmeldung bestaetigen.",
+  "2. Den Ordner ~/.claude in das Server-Volume kopieren (Mount-Pfad /data), z. B. per scp oder ueber das EasyPanel-Terminal.",
+  "3. Danach funktioniert dieser Chat sofort wieder – kein Neustart noetig.",
+].join("\n");
+
+/** Build an OpenAI-style assistant message body (non-streaming) */
+function authExpiredResponse(requestId: string, model: string) {
+  return {
+    id: `chatcmpl-${requestId}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: AUTH_EXPIRED_MESSAGE },
+        finish_reason: "stop",
+      },
+    ],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+}
+
 interface SessionContext {
   sessionKey: string | undefined;
   resume: boolean;
@@ -203,7 +235,13 @@ async function handleStreamingResponse(
     // Handle streaming content deltas
     subprocess.on("content_delta", (event: ClaudeCliStreamEvent) => {
       const delta = event.event.delta;
-      const text = (delta?.type === "text_delta" && delta.text) || "";
+      let text = (delta?.type === "text_delta" && delta.text) || "";
+      // CLI surfaces auth failures as plain text on stdout in some failure
+      // modes - replace with actionable guidance
+      if (text && subprocess.hasAuthError()) {
+        text = AUTH_EXPIRED_MESSAGE;
+        isComplete = true;
+      }
       if (text && !res.writableEnded) {
         const chunk = {
           id: `chatcmpl-${requestId}`,
@@ -338,6 +376,23 @@ async function handleStreamingResponse(
       if (sessionCtx.resume && sessionCtx.sessionKey) {
         clearSession(sessionCtx.sessionKey);
       }
+      if (subprocess.hasAuthError()) {
+        console.error("[Auth] Claude CLI authentication expired - user notified in chat");
+        if (!res.writableEnded) {
+          const chunk = {
+            id: `chatcmpl-${requestId}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: lastModel,
+            choices: [{ index: 0, delta: { role: "assistant", content: AUTH_EXPIRED_MESSAGE }, finish_reason: null }],
+          };
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+        }
+        resolve();
+        return;
+      }
       if (!res.writableEnded) {
         res.write(
           `data: ${JSON.stringify({
@@ -421,6 +476,12 @@ async function handleNonStreamingResponse(
       if (sessionCtx.resume && sessionCtx.sessionKey) {
         clearSession(sessionCtx.sessionKey);
       }
+      if (subprocess.hasAuthError()) {
+        console.error("[Auth] Claude CLI authentication expired - user notified in chat");
+        res.json(authExpiredResponse(requestId, "claude-sonnet-4"));
+        resolve();
+        return;
+      }
       res.status(500).json({
         error: {
           message: error.message,
@@ -442,13 +503,18 @@ async function handleNonStreamingResponse(
           clearSession(sessionCtx.sessionKey);
         }
         if (!res.headersSent) {
-          res.status(500).json({
-            error: {
-              message: `Claude CLI exited with code ${code} without response`,
-              type: "server_error",
-              code: null,
-            },
-          });
+          if (subprocess.hasAuthError()) {
+            console.error("[Auth] Claude CLI authentication expired - user notified in chat");
+            res.json(authExpiredResponse(requestId, "claude-sonnet-4"));
+          } else {
+            res.status(500).json({
+              error: {
+                message: `Claude CLI exited with code ${code} without response`,
+                type: "server_error",
+                code: null,
+              },
+            });
+          }
         }
       }
       resolve();
