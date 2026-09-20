@@ -36,9 +36,9 @@ RUN useradd --create-home --shell /bin/bash proxyapp \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-USER proxyapp
-
-# Claude CLI config/credentials live here - mount a volume on /data
+# NOTE: no USER directive here - the entrypoint needs root to install the
+# keep-alive cron job, then drops to proxyapp via runuser before exec'ing
+# the server. The server process itself still runs unprivileged.
 ENV HOME=/home/proxyapp \
     CLAUDE_CONFIG_DIR=/data/.claude \
     HOST=0.0.0.0 \
