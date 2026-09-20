@@ -20,6 +20,11 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git cron \
   && rm -rf /var/lib/apt/lists/*
 
+# Claude Code CLI - the proxy wraps it as a subprocess.
+# The CLI reads its OAuth credentials from $CLAUDE_CONFIG_DIR (default ~/.claude),
+# so mount a persistent volume there.
+RUN npm install -g @anthropic-ai/claude-code
+
 # Production dependencies only
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
