@@ -1,27 +1,30 @@
-# ---- Build stage ----
+# Stage 1: Build
 FROM node:22-slim AS builder
 WORKDIR /app
 
+# Install dependencies
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# Copy source and build
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-# ---- Runtime stage ----
+# Stage 2: Runtime
 FROM node:22-slim
-
-# Claude Code CLI - the proxy wraps it as a subprocess.
-# The CLI reads its OAuth credentials from $CLAUDE_CONFIG_DIR (default ~/.claude),
-# so mount a persistent volume there.
-RUN npm install -g @anthropic-ai/claude-code
-
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# git: useful for agent workflows; cron: OAuth keep-alive (see entrypoint.sh)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates git cron \
+  && rm -rf /var/lib/apt/lists/*
 
+# Production dependencies only
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+# Compiled output + keep-alive script
 COPY --from=builder /app/dist ./dist
 COPY scripts/keepalive.sh ./scripts/keepalive.sh
 RUN chmod +x ./scripts/keepalive.sh
@@ -31,6 +34,7 @@ RUN chmod +x ./scripts/keepalive.sh
 RUN useradd --create-home --shell /bin/bash proxyapp \
   && mkdir -p /data/.claude \
   && chown -R proxyapp:proxyapp /data /app
+
 # Entrypoint: starts cron (OAuth keep-alive) when KEEPALIVE_CRON is set,
 # then drops privileges and execs the given command
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
