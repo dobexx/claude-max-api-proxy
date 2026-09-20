@@ -677,7 +677,7 @@ async function handleNonStreamingResponse(
         // stdout (no stderr signature) - catch it here and return guidance
         // instead of forwarding the raw error string as chat content.
         if (subprocess.hasAuthError() || isAuthError(finalResult.result || "", null)) {
-          res.json(authExpiredResponse(requestId));
+          res.json(authExpiredResponse(requestId, "claude-sonnet-4"));
           resolve();
           return;
         }
