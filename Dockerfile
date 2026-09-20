@@ -29,6 +29,11 @@ COPY --from=builder /app/dist ./dist
 RUN useradd --create-home --shell /bin/bash proxyapp \
   && mkdir -p /data/.claude \
   && chown -R proxyapp:proxyapp /data /app
+# Entrypoint: starts cron (OAuth keep-alive) when KEEPALIVE_CRON is set,
+# then drops privileges and execs the given command
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 USER proxyapp
 
 # Claude CLI config/credentials live here - mount a volume on /data
