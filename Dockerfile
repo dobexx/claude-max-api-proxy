@@ -23,6 +23,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
+COPY scripts/keepalive.sh ./scripts/keepalive.sh
+RUN chmod +x ./scripts/keepalive.sh
 
 # Non-root user for the proxy process. Note: node:*-slim images already
 # ship a system user named "proxy", so we use a distinct name.
