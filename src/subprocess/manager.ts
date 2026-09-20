@@ -78,6 +78,9 @@ export function isAuthError(stderr: string, exitCode: number | null): boolean {
   return (
     text.includes("authentication_error") ||
     text.includes("authentication failed") ||
+    text.includes("failed to authenticate") ||
+    text.includes("oauth session expired") ||
+    text.includes("could not be refreshed") ||
     (text.includes("401") && text.includes("unauthorized")) ||
     text.includes("oauth token has expired") ||
     text.includes("token expired") ||

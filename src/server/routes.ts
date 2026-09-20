@@ -7,7 +7,7 @@
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { existsSync, readdirSync } from "fs";
-import { ClaudeSubprocess, stageImages, cleanupImages } from "../subprocess/manager.js";
+import { ClaudeSubprocess, stageImages, cleanupImages, isAuthError } from "../subprocess/manager.js";
 import { openaiToCli, openaiToCliDelta } from "../adapter/openai-to-cli.js";
 import {
   cliResultToOpenai,
@@ -450,6 +450,26 @@ async function handleStreamingResponse(
 
     subprocess.on("result", (result: ClaudeCliResult) => {
       isComplete = true;
+      // Same stdout-based auth failure as in non-streaming mode: replace the
+      // raw error text with actionable relogin guidance.
+      if (!res.writableEnded && isAuthError(result.result || "", null)) {
+        const errChunk = {
+          id: `chatcmpl-${requestId}`,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: lastModel,
+          choices: [{
+            index: 0,
+            delta: { role: "assistant", content: AUTH_EXPIRED_MESSAGE },
+            finish_reason: "stop",
+          }],
+        };
+        res.write(`data: ${JSON.stringify(errChunk)}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        resolve();
+        return;
+      }
       if (sessionCtx.sessionKey && cliInput.sessionId) {
         setSession(sessionCtx.sessionKey, cliInput.sessionId, sessionCtx.messageCount);
       }
@@ -653,6 +673,14 @@ async function handleNonStreamingResponse(
 
     subprocess.on("close", (code: number | null) => {
       if (finalResult) {
+        // The CLI reports expired OAuth as a synthetic assistant/result TEXT on
+        // stdout (no stderr signature) - catch it here and return guidance
+        // instead of forwarding the raw error string as chat content.
+        if (subprocess.hasAuthError() || isAuthError(finalResult.result || "", null)) {
+          res.json(authExpiredResponse(requestId));
+          resolve();
+          return;
+        }
         if (sessionCtx.sessionKey && cliInput.sessionId) {
           setSession(sessionCtx.sessionKey, cliInput.sessionId, sessionCtx.messageCount);
         }
