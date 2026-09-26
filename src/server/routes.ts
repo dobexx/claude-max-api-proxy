@@ -778,6 +778,7 @@ export function handleModels(_req: Request, res: Response): void {
     "claude-sonnet-4-6",
     "claude-sonnet-5",
     "claude-opus-5",
+    "claude-opus-5-5",
     "claude-haiku-4",
     "claude-haiku-4-5",
   ];

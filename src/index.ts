@@ -17,8 +17,8 @@ const DEFAULT_MODEL = "claude-code-cli/claude-sonnet-4";
 // Available models
 const AVAILABLE_MODELS = [
   {
-    id: "claude-opus-4",
-    name: "Claude Opus 4.5",
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
     alias: "opus",
     reasoning: true,
   },

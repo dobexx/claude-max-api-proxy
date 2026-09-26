@@ -68,7 +68,7 @@ curl -X POST https://deine-domain/v1/chat/completions \
   }'
 ```
 
-**Modelle:** `claude-opus-5`, `claude-sonnet-5`, `claude-opus-4(-6)`, `claude-sonnet-4(-5/-6)`, `claude-haiku-4(-5)` sowie die Aliase `opus`/`sonnet`/`haiku`. Intern mappen alle auf die CLI-Familie – die konkrete Version bestimmt die installierte CLI (immer aktuell halten: `claude update`).
+**Modelle:** `claude-opus-5-5`, `claude-opus-5`, `claude-sonnet-5`, `claude-opus-4(-6)`, `claude-sonnet-4(-5/-6)`, `claude-haiku-4(-5)` sowie die Aliase `opus`/`sonnet`/`haiku`. Intern mappen alle auf die CLI-Familie – die konkrete Version bestimmt die installierte CLI (immer aktuell halten: `claude update`).
 
 **Hinweis Bilder:** Der Umweg über Temp-Dateien kostet einen zusätzlichen Tool-Call (Read). Kurze Bild-Fragen funktionieren gut; bei sehr vielen Bildern pro Konversation steigt der Token-Verbrauch entsprechend.
 

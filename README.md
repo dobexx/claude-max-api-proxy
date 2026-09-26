@@ -134,11 +134,15 @@ curl -N -X POST http://localhost:3456/v1/chat/completions \
 
 | Model ID | Alias | CLI Model |
 |----------|-------|-----------|
-| `claude-opus-4` | `opus` | Claude Opus |
-| `claude-sonnet-4` | `sonnet` | Claude Sonnet |
-| `claude-haiku-4` | `haiku` | Claude Haiku |
+| `claude-opus-5-5` | `opus` | Claude Opus 5.5 |
+| `claude-opus-5` | `opus` | Claude Opus 5 |
+| `claude-sonnet-5` | `sonnet` | Claude Sonnet 5 |
+| `claude-sonnet-4` | `sonnet` | Claude Sonnet 4 |
+| `claude-haiku-4` | `haiku` | Claude Haiku 4 |
 
-All model IDs also accept a `claude-code-cli/` prefix (e.g., `claude-code-cli/claude-opus-4`). Unknown models default to Opus.
+Versioned variants are also accepted (e.g. `claude-opus-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5`) and map to the same CLI family. All model IDs also accept a `claude-code-cli/` prefix (e.g., `claude-code-cli/claude-opus-5-5`). Unknown models default to Opus.
+
+The concrete model version behind each alias is determined by the installed Claude Code CLI — keep it up to date with `claude update`.
 
 ## Configuration with Popular Tools
 
