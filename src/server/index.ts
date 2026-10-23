@@ -28,7 +28,9 @@ function createApp(): Express {
   app.use((req: Request, _res: Response, next: NextFunction) => {
     if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
       const raw = req.body.toString("utf8");
-      if (process.env.DEBUG) {
+      // Request bodies contain user chat content. Only log them when explicitly
+      // requested via DEBUG_BODY (DEBUG alone only logs method + path).
+      if (process.env.DEBUG_BODY) {
         console.log("[Body raw]:", raw.substring(0, 200));
       }
       try {
@@ -36,7 +38,7 @@ function createApp(): Express {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[Body parse error]:", msg);
-        if (process.env.DEBUG) {
+        if (process.env.DEBUG_BODY) {
           console.error("[Body raw]:", raw.substring(0, 300));
         } else {
           console.error("[Body metadata]:", {

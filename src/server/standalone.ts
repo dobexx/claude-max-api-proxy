@@ -125,7 +125,11 @@ async function main(): Promise<void> {
     console.log("\nServer ready. Test with:");
     console.log(`  curl -X POST http://localhost:${port}/v1/chat/completions \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
-    console.log(`    -d '{"model": "claude-sonnet-4", "messages": [{"role": "user", "content": "Hello!"}]}'`);
+    console.log(`    -H "Authorization: Bearer $PROXY_API_KEY" \\`);
+    console.log(`    -d '{"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "Hello!"}]}'`);
+    if (process.env.DEBUG_BODY) {
+      console.log("\n[Debug] WARNING: DEBUG_BODY is set - request bodies (chat content) are logged.");
+    }
     console.log("\nPress Ctrl+C to stop.\n");
   } catch (err) {
     console.error("Failed to start server:", err);

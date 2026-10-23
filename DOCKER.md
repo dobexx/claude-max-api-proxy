@@ -19,7 +19,8 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 | `PROXY_ADMIN_KEY` | *(fällt auf `PROXY_API_KEY` zurück)* | Key für die Admin-Endpunkte `/admin/*` (Re-Login-Flow). **Empfehlung: separaten, starken Key setzen**, damit normale API-Nutzer keinen Relogin auslösen können. Weder Admin- noch API-Key gesetzt → Admin-Endpunkte gesperrt (403). |
 | `PORT` | `3456` | Port des HTTP-Servers |
 | `HOST` | `127.0.0.1` lokal / `0.0.0.0` im Docker-Image | Bind-Adresse |
-| `DEBUG` | – | `1` aktiviert Request-Logging |
+| `DEBUG` | – | `1` aktiviert Request-Logging (Methode + Pfad, **ohne** Inhalte) |
+| `DEBUG_BODY` | – | `1` schreibt zusätzlich die ersten 200 Zeichen jedes Request-Bodys ins Log. **Enthält Chat-Inhalte** – nur kurzzeitig zur Fehlersuche setzen. |
 | `TOOL_MODE` | `mcp` | Wie Client-Tools (OpenAI `tools`) an Claude gehen. `mcp`: nativ über eine interne MCP-Bridge – Text und `tool_calls` werden live gestreamt. `prompt`: alter Modus (Tools im Prompt beschrieben, `<tool_call>`-Text wird ausgewertet, Antwort wird gepuffert). |
 | `TOOL_RESULT_TIMEOUT_MS` | `600000` (10 min) | Wie lange ein Lauf nach `finish_reason: tool_calls` auf die Tool-Ergebnisse des Clients wartet. Danach wird der CLI-Prozess beendet; späte Ergebnisse starten einen neuen Lauf mit dem vollständigen Verlauf. |
 | `TOOL_RUN_MAX_MS` | `3600000` (60 min) | Harte Obergrenze für einen CLI-Prozess über alle seine Tool-Runden hinweg. |
