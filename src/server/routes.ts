@@ -7,7 +7,7 @@
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { existsSync, readdirSync } from "fs";
-import { ClaudeSubprocess, stageImages, cleanupImages, isAuthError } from "../subprocess/manager.js";
+import { ClaudeSubprocess, isAuthError } from "../subprocess/manager.js";
 import { openaiToCli, openaiToCliDelta } from "../adapter/openai-to-cli.js";
 import {
   cliResultToOpenai,
@@ -218,30 +218,12 @@ export async function handleChatCompletions(
     const subprocess = new ClaudeSubprocess();
     const sessionCtx: SessionContext = { sessionKey, resume, messageCount: body.messages.length };
 
-    // Stage attached images (OpenAI image_url blocks) as temp files and point
-    // the prompt at them - Claude Code reads them via its Read tool
-    let stagedImages: string[] = [];
-    if (cliInput.images && cliInput.images.length > 0) {
-      stagedImages = await stageImages(cliInput.images);
-      delete cliInput.images; // don't hold base64 in memory longer than needed
-      if (stagedImages.length > 0) {
-        const listing = stagedImages.map((p, i) => `${i + 1}. ${p}`).join("\n");
-        cliInput.prompt =
-          `[Attached images - use your Read tool on each file to view them]\n${listing}\n\n` +
-          cliInput.prompt;
-      }
-    }
-
-    try {
-      if (stream) {
-        await handleStreamingResponse(req, res, subprocess, cliInput, requestId, sessionCtx);
-      } else {
-        await handleNonStreamingResponse(res, subprocess, cliInput, requestId, sessionCtx);
-      }
-    } finally {
-      if (stagedImages.length > 0) {
-        await cleanupImages(stagedImages);
-      }
+    // Attached images (OpenAI image_url blocks) travel with cliInput.images
+    // and are sent inline as image content blocks by the subprocess manager
+    if (stream) {
+      await handleStreamingResponse(req, res, subprocess, cliInput, requestId, sessionCtx);
+    } else {
+      await handleNonStreamingResponse(res, subprocess, cliInput, requestId, sessionCtx);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -634,6 +616,7 @@ async function handleStreamingResponse(
       resume: sessionCtx.resume,
       effort: cliInput.effort,
       disableBuiltinTools: cliInput.hasClientTools,
+      images: cliInput.images,
     }).catch((err) => {
       console.error("[Streaming] Subprocess start error:", err);
       reject(err);
@@ -774,6 +757,7 @@ async function handleNonStreamingResponse(
         resume: sessionCtx.resume,
         effort: cliInput.effort,
         disableBuiltinTools: cliInput.hasClientTools,
+        images: cliInput.images,
       })
       .catch((error) => {
         res.status(500).json({

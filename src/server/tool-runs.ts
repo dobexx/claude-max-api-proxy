@@ -448,7 +448,9 @@ class ToolRun {
         disableBuiltinTools: true,
         mcpConfigPath: this.configPath,
         timeout: toolRunMaxMs(),
+        images: cliInput.images,
       });
+      delete cliInput.images; // don't hold base64 for the run's lifetime
     } catch (err) {
       this.terminate(err instanceof Error ? err.message : String(err));
     }
@@ -742,11 +744,6 @@ export async function startToolRun(opts: {
   resume: boolean;
   messageCount: number;
 }): Promise<void> {
-  if (opts.cliInput.images && opts.cliInput.images.length > 0) {
-    // Built-in tools (incl. Read) are disabled when the client brings tools
-    console.error("[ToolRun] Image attachments are not supported together with client tools - ignored");
-    delete opts.cliInput.images;
-  }
   const run = new ToolRun(opts);
   const model = () => run.currentModel;
   const sink = opts.stream

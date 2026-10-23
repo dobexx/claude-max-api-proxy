@@ -22,14 +22,37 @@ import { stopBridge } from "../mcp/bridge.js";
 const FAKE_CLI = String.raw`#!/usr/bin/env node
 const fs = require("fs");
 const args = process.argv.slice(2);
-const cfgPath = args[args.indexOf("--mcp-config") + 1];
-const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")).mcpServers.client;
+const mcpIdx = args.indexOf("--mcp-config");
+const cfg = mcpIdx >= 0 ? JSON.parse(fs.readFileSync(args[mcpIdx + 1], "utf8")).mcpServers.client : null;
+const streamJsonIn = args.includes("--input-format") && args[args.indexOf("--input-format") + 1] === "stream-json";
 let prompt = "";
+let imageTypes = [];
 process.stdin.on("data", (c) => (prompt += c));
-process.stdin.on("end", main);
+process.stdin.on("end", () => {
+  if (streamJsonIn) {
+    const msg = JSON.parse(prompt.trim().split("\n")[0]);
+    const blocks = msg.message.content;
+    imageTypes = blocks.filter((b) => b.type === "image").map((b) => b.source.media_type);
+    prompt = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  }
+  if (!cfg) return plain();
+  main();
+});
 
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const ev = (event) => out({ type: "stream_event", event, session_id: "s", uuid: "u" });
+
+// No MCP config (no client tools): echo what arrived, incl. inline images
+function plain() {
+  const text = "PLAIN images=" + (imageTypes.join(",") || "none") + " note=" + (prompt.includes("could not be passed on") ? "yes" : "no");
+  ev({ type: "message_start", message: { model: "claude-haiku-4-5-20251001", usage: { input_tokens: 3, output_tokens: 0 } } });
+  ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+  ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
+  ev({ type: "content_block_stop", index: 0 });
+  ev({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } });
+  out({ type: "result", subtype: "success", is_error: false, result: text, num_turns: 1,
+        usage: { input_tokens: 3, output_tokens: 2 }, session_id: "s" });
+}
 
 async function rpc(method, params, id) {
   const r = await fetch(cfg.url, {
@@ -86,7 +109,7 @@ async function main() {
 
   ev({ type: "message_start", message: { model: "claude-haiku-4-5-20251001", usage: { input_tokens: 20, output_tokens: 0 } } });
   ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-  const final = "Ergebnis: " + results.join(" | ");
+  const final = "Ergebnis: " + results.join(" | ") + (imageTypes.length ? " [images:" + imageTypes.join(",") + "]" : "");
   ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: final } });
   ev({ type: "content_block_stop", index: 0 });
   ev({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } });
@@ -109,6 +132,10 @@ let baseUrl: string;
 let server: Server;
 let tmpDir: string;
 const savedEnv = { ...process.env };
+
+// 1x1 transparent PNG
+const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cmap-fakecli-"));
@@ -169,6 +196,53 @@ function collect(chunks: any[]) {
 }
 
 describe("native client tools via MCP", { timeout: 30_000 }, () => {
+  it("passes images inline together with client tools", async () => {
+    const messages: any[] = [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: `data:image/png;base64,${TINY_PNG}` } },
+        { type: "text", text: "Was siehst du? Nutze das Tool." },
+      ],
+    }];
+    const r1 = await post({ model: "haiku", stream: true, messages, tools: TOOLS });
+    const t1 = collect(await readChunks(r1));
+    assert.equal(t1.finish, "tool_calls");
+    messages.push(
+      { role: "assistant", content: null, tool_calls: t1.calls.map((c) => ({
+        id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } })) },
+      { role: "tool", tool_call_id: t1.calls[0].id, content: "ok" }
+    );
+    const r2 = await post({ model: "haiku", stream: true, messages, tools: TOOLS });
+    const t2 = collect(await readChunks(r2));
+    assert.equal(t2.content, "Ergebnis: ok [images:image/png]");
+  });
+
+  it("passes images inline without tools and sniffs the real type", async () => {
+    // Declared as jpeg, actually PNG: the media_type must follow the bytes
+    const r = await post({ model: "haiku", messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${TINY_PNG}` } },
+        { type: "text", text: "Bild?" },
+      ],
+    }] });
+    const b = (await r.json()) as any;
+    assert.equal(b.choices[0].message.content, "PLAIN images=image/png note=no");
+  });
+
+  it("skips unsupported image formats and tells the model", async () => {
+    const heicLike = Buffer.from("0000001866747970686569630000", "hex").toString("base64");
+    const r = await post({ model: "haiku", messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: `data:image/heic;base64,${heicLike}` } },
+        { type: "text", text: "Bild?" },
+      ],
+    }] });
+    const b = (await r.json()) as any;
+    assert.equal(b.choices[0].message.content, "PLAIN images=none note=yes");
+  });
+
   it("streams text and tool_calls, then continues the same run with the results", async () => {
     const messages: any[] = [{ role: "user", content: "Wetter in Berlin?" }];
 

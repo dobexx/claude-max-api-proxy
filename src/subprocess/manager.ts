@@ -40,7 +40,7 @@ export interface SubprocessOptions {
   effort?: ClaudeEffort;
   /** Disable all built-in CLI tools (when the client provides its own tool list) */
   disableBuiltinTools?: boolean;
-  /** Images to stage as temp files so Claude can Read them */
+  /** Images sent inline to the CLI as image content blocks (stream-json input) */
   images?: CliImage[];
   /** MCP config file exposing client tools (native tool mode, see tool-runs.ts) */
   mcpConfigPath?: string;
@@ -49,13 +49,93 @@ export interface SubprocessOptions {
 /** Max size per image (decoded), 20 MB - generous but bounded */
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
-const MIME_TO_EXT: Record<string, string> = {
-  "image/png": ".png",
-  "image/jpeg": ".jpg",
-  "image/jpg": ".jpg",
-  "image/gif": ".gif",
-  "image/webp": ".webp",
-};
+/** Image ready to be sent inline (Anthropic image content block) */
+export interface InlineImage {
+  mediaType: string;
+  data: string; // base64
+}
+
+/**
+ * Detect the real image type from magic bytes. The API rejects a media_type
+ * that does not match the data, and clients' declared MIME types are not
+ * always right - so never trust the header alone.
+ * Returns null for formats the API cannot read (e.g. HEIC, BMP, SVG).
+ */
+export function sniffImageType(buf: Buffer): string | null {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length >= 6 && /^GIF8[79]a$/.test(buf.subarray(0, 6).toString("latin1"))) return "image/gif";
+  if (
+    buf.length >= 12 &&
+    buf.subarray(0, 4).toString("latin1") === "RIFF" &&
+    buf.subarray(8, 12).toString("latin1") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+/** Download a remote image with timeout and a streaming size limit */
+async function downloadImage(url: string): Promise<Buffer | null> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok || !res.body) return null;
+  if (Number(res.headers.get("content-length") || 0) > MAX_IMAGE_BYTES) return null;
+  // Abort as soon as the body exceeds the limit instead of buffering it all
+  const chunks: Buffer[] = [];
+  let received = 0;
+  for await (const chunk of res.body) {
+    received += (chunk as Buffer).length;
+    if (received > MAX_IMAGE_BYTES) return null;
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Turn request images into inline image blocks. Remote URLs are downloaded;
+ * unsupported, oversized or unreachable images are skipped and counted.
+ */
+export async function prepareInlineImages(
+  images: CliImage[]
+): Promise<{ images: InlineImage[]; skipped: number }> {
+  const ready: InlineImage[] = [];
+  let skipped = 0;
+  for (const img of images) {
+    try {
+      const buf = img.sourceUrl ? await downloadImage(img.sourceUrl) : Buffer.from(img.data, "base64");
+      const mediaType = buf && buf.length > 0 && buf.length <= MAX_IMAGE_BYTES ? sniffImageType(buf) : null;
+      if (!buf || !mediaType) {
+        skipped++;
+        continue;
+      }
+      ready.push({ mediaType, data: img.sourceUrl ? buf.toString("base64") : img.data });
+    } catch {
+      skipped++;
+    }
+  }
+  return { images: ready, skipped };
+}
+
+/** One stream-json user message: image blocks first, then the prompt text */
+export function buildStreamJsonUserMessage(prompt: string, images: InlineImage[]): string {
+  return (
+    JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          ...images.map((i) => ({
+            type: "image",
+            source: { type: "base64", media_type: i.mediaType, data: i.data },
+          })),
+          { type: "text", text: prompt },
+        ],
+      },
+    }) + "\n"
+  );
+}
 
 export interface SubprocessEvents {
   message: (msg: ClaudeCliMessage) => void;
@@ -91,71 +171,6 @@ export function isAuthError(stderr: string, exitCode: number | null): boolean {
     text.includes("please run /login") ||
     text.includes("please run claude auth login")
   );
-}
-
-/**
- * Stage request images as temp files so the CLI can read them via the Read tool.
- * Returns absolute file paths. Caller is responsible for cleanup.
- * Remote URLs are downloaded (5s timeout, bounded size).
- */
-export async function stageImages(images: CliImage[]): Promise<string[]> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cmap-img-"));
-  const paths: string[] = [];
-
-  for (let i = 0; i < images.length; i++) {
-    const img = images[i];
-    try {
-      let buffer: Buffer;
-      let mime = img.mimeType;
-
-      if (img.sourceUrl) {
-        const res = await fetch(img.sourceUrl, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!res.ok || !res.body) continue;
-        const contentLength = Number(res.headers.get("content-length") || 0);
-        if (contentLength > MAX_IMAGE_BYTES) continue;
-        mime = mime || res.headers.get("content-type") || "";
-        // Enforce the size limit while streaming: abort as soon as the body
-        // exceeds MAX_IMAGE_BYTES instead of buffering unbounded data first
-        const chunks: Buffer[] = [];
-        let received = 0;
-        let tooLarge = false;
-        for await (const chunk of res.body) {
-          received += (chunk as Buffer).length;
-          if (received > MAX_IMAGE_BYTES) {
-            tooLarge = true;
-            break;
-          }
-          chunks.push(Buffer.from(chunk));
-        }
-        if (tooLarge) continue;
-        buffer = Buffer.concat(chunks);
-      } else {
-        buffer = Buffer.from(img.data, "base64");
-      }
-
-      if (buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES) continue;
-      const ext = MIME_TO_EXT[mime] || ".png";
-      const file = path.join(dir, `image-${i + 1}${ext}`);
-      await fs.writeFile(file, buffer);
-      paths.push(file);
-    } catch {
-      // Skip broken images silently - prompt text still goes through
-    }
-  }
-
-  return paths;
-}
-
-/** Best-effort cleanup of staged image files (whole temp dir) */
-export async function cleanupImages(paths: string[]): Promise<void> {
-  const dirs = new Set(paths.map((p) => path.dirname(p)));
-  for (const dir of dirs) {
-    if (dir.includes("cmap-img-")) {
-      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
-    }
-  }
 }
 
 /**
@@ -314,7 +329,27 @@ export class ClaudeSubprocess extends EventEmitter {
    * Start the Claude CLI subprocess with the given prompt
    */
   async start(prompt: string, options: SubprocessOptions): Promise<void> {
-    const args = this.buildArgs(options);
+    // Images go inline as content blocks (stream-json input) - no temp files,
+    // no Read tool needed, so they also work when built-in tools are disabled
+    let inlineImages: InlineImage[] = [];
+    if (options.images && options.images.length > 0) {
+      const prepared = await prepareInlineImages(options.images);
+      inlineImages = prepared.images;
+      if (prepared.skipped > 0) {
+        console.error(
+          `[Subprocess] ${prepared.skipped} image(s) skipped (unsupported format, too large or unreachable)`
+        );
+        prompt =
+          `[Note: ${prepared.skipped} attached image(s) could not be passed on ` +
+          `(unsupported format, too large or unreachable). Tell the user.]\n\n` +
+          prompt;
+      }
+    }
+    const stdinPayload =
+      inlineImages.length > 0 ? buildStreamJsonUserMessage(prompt, inlineImages) : prompt;
+    inlineImages = []; // don't hold base64 longer than needed
+
+    const args = this.buildArgs(options, stdinPayload !== prompt);
     const timeout = options.timeout || DEFAULT_TIMEOUT;
     if (process.env.DEBUG_SUBPROCESS) {
       console.error(`[Subprocess] args: ${JSON.stringify(args)}`);
@@ -351,7 +386,7 @@ export class ClaudeSubprocess extends EventEmitter {
         });
 
         // Pass prompt via stdin to avoid E2BIG on large inputs
-        this.process.stdin?.write(prompt);
+        this.process.stdin?.write(stdinPayload);
         this.process.stdin?.end();
 
         if (process.env.DEBUG_SUBPROCESS) {
@@ -408,7 +443,7 @@ export class ClaudeSubprocess extends EventEmitter {
   /**
    * Build CLI arguments array
    */
-  private buildArgs(options: SubprocessOptions): string[] {
+  private buildArgs(options: SubprocessOptions, streamJsonInput = false): string[] {
     const args = [
       "--print", // Non-interactive mode
       "--dangerously-skip-permissions", // Skip permission prompts
@@ -429,6 +464,11 @@ export class ClaudeSubprocess extends EventEmitter {
 
     if (options.effort) {
       args.push("--effort", options.effort);
+    }
+
+    // Inline images: stdin carries one stream-json user message instead of text
+    if (streamJsonInput) {
+      args.push("--input-format", "stream-json");
     }
 
     // Client-provided tools (OpenAI function calling): the CLI must NOT execute

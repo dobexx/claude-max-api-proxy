@@ -175,10 +175,16 @@ export function messagesToPrompt(
         parts.push(`<system>\n${stripOpenClawTooling(text)}\n</system>\n`);
         break;
 
-      case "user":
-        // User messages are the main prompt
-        parts.push(text);
+      case "user": {
+        // User messages are the main prompt. Images travel separately as
+        // inline image blocks - mark where they were attached in the history.
+        const imageCount = Array.isArray(msg.content)
+          ? msg.content.filter((b) => b.type === "image_url").length
+          : 0;
+        const marker = imageCount > 0 ? `[${imageCount} image(s) attached]\n` : "";
+        parts.push(marker + text);
         break;
+      }
 
       case "assistant": {
         // Previous assistant responses for context, including the tool calls
