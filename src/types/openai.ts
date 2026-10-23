@@ -68,10 +68,10 @@ export interface OpenAIChatResponseChoice {
   index: number;
   message: {
     role: "assistant";
-    content: string;
+    content: string | null;
     tool_calls?: OpenAIToolCall[];
   };
-  finish_reason: "stop" | "length" | "content_filter" | null;
+  finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null;
 }
 
 export interface OpenAIChatResponse {
@@ -100,7 +100,7 @@ export interface OpenAIChatChunkDelta {
 export interface OpenAIChatChunkChoice {
   index: number;
   delta: OpenAIChatChunkDelta;
-  finish_reason: "stop" | "length" | "content_filter" | null;
+  finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null;
 }
 
 export interface OpenAIChatChunk {

@@ -87,7 +87,7 @@ export function extractModel(model: string): ClaudeModel {
  *   - A plain string: "Hello"
  *   - An array of content blocks: [{"type": "text", "text": "Hello"}]
  */
-function extractText(content: string | OpenAIContentBlock[] | null): string {
+export function extractText(content: string | OpenAIContentBlock[] | null): string {
   if (content === null || content === undefined) {
     return "";
   }
@@ -180,15 +180,23 @@ export function messagesToPrompt(
         parts.push(text);
         break;
 
-      case "assistant":
-        // Previous assistant responses for context
-        parts.push(`<previous_response>\n${text}\n</previous_response>\n`);
+      case "assistant": {
+        // Previous assistant responses for context, including the tool calls
+        // they requested (content is null on pure tool-call turns)
+        const calls = (msg.tool_calls || [])
+          .map((tc) => `[Tool call ${tc.id}: ${tc.function.name}(${tc.function.arguments})]`)
+          .join("\n");
+        const body = [text, calls].filter(Boolean).join("\n");
+        parts.push(`<previous_response>\n${body}\n</previous_response>\n`);
         break;
+      }
 
-      case "tool":
+      case "tool": {
         // Client-executed tool results (OpenWebUI sends role="tool")
-        parts.push(`<tool_result>\n${text}\n</tool_result>\n`);
+        const ref = msg.tool_call_id ? ` tool_call_id="${msg.tool_call_id}"` : "";
+        parts.push(`<tool_result${ref}>\n${text}\n</tool_result>\n`);
         break;
+      }
     }
   }
 
@@ -228,11 +236,16 @@ export function toolsToPromptBlock(tools: OpenAIToolDefinition[]): string {
 /**
  * Convert OpenAI chat request to CLI input format
  */
-export function openaiToCli(request: OpenAIChatRequest): CliInput {
+export function openaiToCli(
+  request: OpenAIChatRequest,
+  opts: { embedTools?: boolean } = {}
+): CliInput {
   const images = extractImages(request.messages);
   const tools = request.tools;
   let prompt = messagesToPrompt(request.messages);
-  if (tools && tools.length > 0) {
+  // Legacy prompt mode describes the tools in the prompt; MCP mode exposes
+  // them natively and must not ask for <tool_call> text envelopes
+  if (tools && tools.length > 0 && opts.embedTools !== false) {
     prompt = toolsToPromptBlock(tools) + "\n\n" + prompt;
   }
   return {
@@ -253,7 +266,8 @@ export function openaiToCli(request: OpenAIChatRequest): CliInput {
  */
 export function openaiToCliDelta(
   request: OpenAIChatRequest,
-  sinceIndex: number
+  sinceIndex: number,
+  opts: { embedTools?: boolean } = {}
 ): CliInput {
   const newMessages = request.messages
     .slice(sinceIndex)
@@ -265,7 +279,7 @@ export function openaiToCliDelta(
   // Fallback to full history if nothing new was found (shouldn't happen,
   // but never send an empty prompt to the CLI)
   let prompt = messagesToPrompt(source);
-  if (tools && tools.length > 0) {
+  if (tools && tools.length > 0 && opts.embedTools !== false) {
     prompt = toolsToPromptBlock(tools) + "\n\n" + prompt;
   }
   return {

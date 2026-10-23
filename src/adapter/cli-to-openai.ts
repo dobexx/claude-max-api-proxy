@@ -116,7 +116,7 @@ export function cliResultToOpenai(
  * Normalize Claude model names to a consistent format
  * e.g., "claude-sonnet-4-5-20250929" -> "claude-sonnet-4"
  */
-function normalizeModelName(model: string | undefined): string {
+export function normalizeModelName(model: string | undefined): string {
   if (!model) return "claude-sonnet-4";
   // Keep the major version visible: "claude-opus-5-..." -> "claude-opus-5"
   const m = model.match(/claude-(opus|sonnet|haiku)-(\d+)/);

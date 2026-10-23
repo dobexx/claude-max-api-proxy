@@ -42,6 +42,8 @@ export interface SubprocessOptions {
   disableBuiltinTools?: boolean;
   /** Images to stage as temp files so Claude can Read them */
   images?: CliImage[];
+  /** MCP config file exposing client tools (native tool mode, see tool-runs.ts) */
+  mcpConfigPath?: string;
 }
 
 /** Max size per image (decoded), 20 MB - generous but bounded */
@@ -416,10 +418,14 @@ export class ClaudeSubprocess extends EventEmitter {
       "--include-partial-messages", // Enable streaming chunks
       "--model",
       options.model, // Model alias (opus/sonnet/haiku)
-      "--append-system-prompt",
-      OPENCLAW_TOOL_MAPPING_PROMPT,
       // Prompt is passed via stdin (avoids E2BIG on large inputs)
     ];
+
+    // The OpenClaw mapping points tool names at Bash/Read/... - meaningless
+    // (and misleading) when the client brings its own tools instead
+    if (!options.disableBuiltinTools) {
+      args.push("--append-system-prompt", OPENCLAW_TOOL_MAPPING_PROMPT);
+    }
 
     if (options.effort) {
       args.push("--effort", options.effort);
@@ -442,6 +448,12 @@ export class ClaudeSubprocess extends EventEmitter {
       // No stable session key (e.g. request.user missing) — don't leave
       // orphaned session files behind
       args.push("--no-session-persistence");
+    }
+
+    // Client tools via MCP: only our bridge, no user/project MCP servers.
+    // Kept last - --mcp-config is variadic.
+    if (options.mcpConfigPath) {
+      args.push("--strict-mcp-config", "--mcp-config", options.mcpConfigPath);
     }
 
     return args;

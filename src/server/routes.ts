@@ -16,6 +16,13 @@ import {
 import { getSession, setSession, clearSession } from "../subprocess/session-store.js";
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
+import { AUTH_EXPIRED_MESSAGE } from "./messages.js";
+import {
+  getToolMode,
+  continueToolRun,
+  startToolRun,
+  hasTrailingToolResults,
+} from "./tool-runs.js";
 
 /**
  * Check whether Claude CLI credentials exist at all. On a fresh container
@@ -32,22 +39,6 @@ function hasClaudeCredentials(): boolean {
   }
 }
 
-/**
- * User-facing guidance when the Claude CLI's OAuth session has expired.
- * Returned as a normal assistant message instead of a raw 500 so the user
- * sees actionable steps directly in their chat client.
- */
-const AUTH_EXPIRED_MESSAGE = [
-  "Die Claude-Anmeldung auf dem Server ist abgelaufen – Anfragen sind derzeit nicht moeglich.",
-  "",
-  "Neuanmeldung direkt ueber die Admin-API (kein Server-Zugriff noetig):",
-  "1. `POST /admin/relogin/start` (mit Admin-Key) – die Antwort enthaelt eine Login-URL.",
-  "2. URL im Browser oeffnen und die Anmeldung bestaetigen.",
-  "3. Den angezeigten Code per `POST /admin/relogin/complete` zurueckschicken.",
-  "4. Danach funktioniert dieser Chat sofort wieder – die neuen Tokens liegen persistent im Volume.",
-  "",
-  "Details: siehe DOCKER.md, Abschnitt 'Re-Login ohne Container-Zugriff'.",
-].join("\n");
 
 /**
  * Parse a <tool_call>{...}</tool_call> envelope from Claude's text output.
@@ -106,7 +97,10 @@ interface SessionContext {
  * when we have one for this `request.user` key instead of replaying the
  * full message history on every turn.
  */
-function resolveCliInput(body: OpenAIChatRequest): {
+function resolveCliInput(
+  body: OpenAIChatRequest,
+  opts: { embedTools?: boolean } = {}
+): {
   cliInput: ReturnType<typeof openaiToCli>;
   sessionKey: string | undefined;
   resume: boolean;
@@ -119,14 +113,14 @@ function resolveCliInput(body: OpenAIChatRequest): {
   const existing = sessionKey ? getSession(sessionKey) : undefined;
 
   if (existing) {
-    const cliInput = openaiToCliDelta(body, existing.messageCount);
+    const cliInput = openaiToCliDelta(body, existing.messageCount, opts);
     cliInput.sessionId = existing.claudeSessionId;
     // Effort is per-request, not per-session: honor it on resumed turns too
-    cliInput.effort = openaiToCli(body).effort;
+    cliInput.effort = openaiToCli(body, opts).effort;
     return { cliInput, sessionKey, resume: true };
   }
 
-  const cliInput = openaiToCli(body);
+  const cliInput = openaiToCli(body, opts);
   if (sessionKey) {
     cliInput.sessionId = uuidv4(); // pin a known ID so we can --resume it later
   }
@@ -186,6 +180,37 @@ export async function handleChatCompletions(
         res.json(guidance);
       }
       return;
+    }
+
+    // Native client-tool support (TOOL_MODE=mcp, default): client tools are
+    // exposed to the CLI as an MCP server. A request that carries results for
+    // tool calls of a parked run continues that run in the same CLI process.
+    if (getToolMode() === "mcp") {
+      const continued = continueToolRun(body, res, requestId, stream);
+      if (continued) {
+        await continued;
+        return;
+      }
+      if (body.tools && body.tools.length > 0) {
+        // Results for a run that no longer exists (timed out, restarted):
+        // never --resume a CLI session that may end in a dangling tool_use -
+        // replay the full history in a fresh session instead.
+        if (hasTrailingToolResults(body.messages) && body.user) {
+          clearSession(body.user);
+        }
+        const tooled = resolveCliInput(body, { embedTools: false });
+        await startToolRun({
+          res,
+          stream,
+          requestId,
+          cliInput: tooled.cliInput,
+          tools: body.tools,
+          sessionKey: tooled.sessionKey,
+          resume: tooled.resume,
+          messageCount: body.messages.length,
+        });
+        return;
+      }
     }
 
     // Convert to CLI input format, resuming a persisted session when we have one
