@@ -10,7 +10,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { startServer, stopServer } from "./index.js";
-import { verifyClaude, sweepStaleSystemPromptFiles } from "../subprocess/manager.js";
+import { verifyClaude, sweepStaleSystemPromptFiles, isExternalMcpAllowed } from "../subprocess/manager.js";
 import { initApiKey, initAdminKey } from "./auth.js";
 import { getSystemPromptMode, isOpenClawMappingEnabled } from "../adapter/system-prompt.js";
 
@@ -125,6 +125,11 @@ async function main(): Promise<void> {
     await startServer({ port, host });
     console.log(
       `[Prompt] System prompt mode: ${getSystemPromptMode()} | OpenClaw tool mapping: ${isOpenClawMappingEnabled() ? "on" : "off"}`
+    );
+    console.log(
+      isExternalMcpAllowed()
+        ? "[MCP] WARNING: ALLOW_EXTERNAL_MCP=on - the CLI loads external MCP servers incl. claude.ai connectors of this account"
+        : "[MCP] External MCP servers and claude.ai connectors: blocked"
     );
     const swept = sweepStaleSystemPromptFiles();
     if (swept > 0) {

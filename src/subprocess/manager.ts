@@ -428,6 +428,33 @@ function isProcessAlive(pid: number): boolean {
 
 process.on("exit", cleanupLiveSystemPromptFiles);
 
+// ─── External MCP servers ─────────────────────────────────────────────────────
+
+/**
+ * ALLOW_EXTERNAL_MCP (default off): whether the CLI may load MCP servers
+ * beyond the proxy's own client-tool bridge - user/project MCP config and the
+ * claude.ai connectors of the logged-in account. Off is enforced twice:
+ * --strict-mcp-config (no config-file servers) and
+ * ENABLE_CLAUDEAI_MCP_SERVERS=false (no claude.ai connectors); each alone
+ * removed the connectors in testing, both together guard against one of them
+ * changing behavior in a future CLI release.
+ */
+export function isExternalMcpAllowed(): boolean {
+  const raw = (process.env.ALLOW_EXTERNAL_MCP ?? "off").trim().toLowerCase();
+  return ["on", "1", "true", "yes"].includes(raw);
+}
+
+/** Environment for the CLI subprocess */
+export function buildCliEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => k !== "CLAUDECODE")
+  );
+  if (!isExternalMcpAllowed()) {
+    env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  }
+  return env;
+}
+
 export class ClaudeSubprocess extends EventEmitter {
   private process: ChildProcess | null = null;
   private buffer: string = "";
@@ -502,9 +529,7 @@ export class ClaudeSubprocess extends EventEmitter {
         const { bin, shell } = resolveClaudeBin();
         this.process = spawn(bin, args, {
           cwd: options.cwd || process.cwd(),
-          env: Object.fromEntries(
-            Object.entries(process.env).filter(([k]) => k !== "CLAUDECODE")
-          ),
+          env: buildCliEnv(),
           stdio: ["pipe", "pipe", "pipe"],
           shell,
         });
@@ -649,10 +674,17 @@ export class ClaudeSubprocess extends EventEmitter {
       args.push("--no-session-persistence");
     }
 
-    // Client tools via MCP: only our bridge, no user/project MCP servers.
-    // Kept last - --mcp-config is variadic.
+    // MCP servers: by default the CLI gets NO MCP servers except our own
+    // client-tool bridge. Without this it would load the claude.ai connectors
+    // of the logged-in account (Microsoft 365, Claude Docs, ...) and - with
+    // --dangerously-skip-permissions - could call them unasked.
+    // ALLOW_EXTERNAL_MCP=on restores the old behavior (tool runs always stay
+    // strict: only our bridge). Kept last - --mcp-config is variadic.
+    if (!isExternalMcpAllowed() || options.mcpConfigPath) {
+      args.push("--strict-mcp-config");
+    }
     if (options.mcpConfigPath) {
-      args.push("--strict-mcp-config", "--mcp-config", options.mcpConfigPath);
+      args.push("--mcp-config", options.mcpConfigPath);
     }
 
     return args;
