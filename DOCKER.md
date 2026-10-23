@@ -28,6 +28,7 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 | `SYSTEM_PROMPT_MODE` | `append` | Wie der Systemprompt des Clients (OpenAI `system`-Nachrichten, z. B. aus OpenWebUI) bei Claude ankommt. `append`: wird an den Systemprompt von Claude Code **angehängt** – echte System-Ebene, Claude-Code-Verhalten (Tools, Skills) bleibt. `replace`: **ersetzt** den Systemprompt von Claude Code komplett – volle Kontrolle über Ton und Rolle, aber die Tool- und Skill-Anleitungen von Claude Code fallen weg. `wrap`: alter Modus – Systemprompt wird als `<system>`-Block in die Nutzernachricht gesetzt. Der Prompt wird über eine temporäre Datei (0600) übergeben und danach gelöscht. |
 | `OPENCLAW_TOOL_MAPPING` | `on` | Hängt eine Zuordnung von OpenClaw-Tool-Namen (`exec`, `memory_search`, …) an den Systemprompt, wenn der Client keine eigenen Tools schickt. Nur für OpenClaw sinnvoll – **für OpenWebUI `off` setzen**. |
 | `ALLOW_EXTERNAL_MCP` | `off` | Ob die CLI MCP-Server außerhalb der proxy-eigenen Tool-Bridge laden darf – insbesondere die **claude.ai-Connectors des angemeldeten Accounts** (z. B. Microsoft 365, Claude Docs). Standard `off`: blockiert per `--strict-mcp-config` **und** `ENABLE_CLAUDEAI_MCP_SERVERS=false`. Weil der Proxy ohne Rechte-Abfrage läuft (`--dangerously-skip-permissions`), könnte das Modell sonst z. B. Mails senden oder Dateien löschen. `on` nur setzen, wenn du das bewusst willst. |
+| `CLAUDE_MEMORY` | `off` | Das eigene Datei-Gedächtnis von Claude Code (`/data/.claude/projects/<cwd>/memory/`). Der Proxy bedient alle Chats aus demselben Arbeitsverzeichnis – dieses Gedächtnis wäre also **für alle Chats und Nutzer gemeinsam**. Standard `off` (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`): keine Memory-Anleitung im Systemprompt, gespeicherte Erinnerungen werden nicht geladen. OpenWebUI bringt ein eigenes Memory mit. |
 
 `/health` bleibt immer öffentlich (für Uptime-Checks und den Docker-Healthcheck).
 
@@ -63,6 +64,8 @@ Bilder aus `image_url`-Blöcken (Data-URLs oder http(s)-URLs) gehen als **Bild-B
 4. **Erst-Anmeldung:** Einfach den Dienst starten und einmal den Re-Login-Flow durchlaufen (siehe unten) – kein manuelles Kopieren von Credentials nötig.
 5. **Domain** auf den Dienst zeigen, Port **3456** – SSL übernimmt EasyPanel.
 6. **Einmalig einloggen:** Beim ersten Start ist das Volume leer – Chat-Requests beantwortet der Proxy dann mit einer Anleitung statt einer Fehlermeldung. Einmal den Re-Login-Flow durchlaufen (siehe nächster Abschnitt), danach funktioniert alles dauerhaft – auch über Neustarts und Redeploys hinweg.
+
+> ⚠️ **Auto-Deploy:** Ist der Dienst mit dem GitHub-Repo verbunden, löst **jeder Push auf `main` automatisch einen Build und Redeploy** aus. Laufende Chats brechen dabei ab. Deshalb nur getesteten Code auf `main` pushen und Zwischenstände auf Feature-Branches halten. Welcher Stand läuft, zeigt die Umgebungsvariable `GIT_SHA` im Container.
 
 ## Testen
 
@@ -153,6 +156,8 @@ Der Flow läuft nach 10 Minuten ab (Sicherheits-Timeout). Die Admin-Endpunkte ve
 |---|---|---|
 | `/data` | **Volume (Pflicht)** | Claude-Credentials (`/data/.claude`) – überlebt Neustarts/Redeploys; Tokens erneuern sich hier automatisch |
 | alles andere | ephemeral | Image, Code, Temp-Dateien – darf bei jedem Deploy neu entstehen |
+
+**Temp-Dateien:** Systemprompt-Dateien (`cmap-sp-*`) und Tool-Bridge-Konfigurationen (`cmap-mcp-*`, enthalten ein Token pro Lauf) liegen in `/tmp` mit Rechten 0600. Sie werden nach jedem Lauf gelöscht, beim Beenden des Proxys (Redeploy) synchron entfernt und beim Start werden Reste früherer Abstürze aufgeräumt.
 
 ## ⚠️ Hinweis zu Kosten & Limits
 

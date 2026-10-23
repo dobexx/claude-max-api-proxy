@@ -10,7 +10,8 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { startServer, stopServer } from "./index.js";
-import { verifyClaude, sweepStaleSystemPromptFiles, isExternalMcpAllowed } from "../subprocess/manager.js";
+import { verifyClaude, isExternalMcpAllowed, isClaudeMemoryEnabled } from "../subprocess/manager.js";
+import { sweepStaleTempFiles } from "../subprocess/temp-files.js";
 import { initApiKey, initAdminKey } from "./auth.js";
 import { getSystemPromptMode, isOpenClawMappingEnabled } from "../adapter/system-prompt.js";
 
@@ -131,9 +132,14 @@ async function main(): Promise<void> {
         ? "[MCP] WARNING: ALLOW_EXTERNAL_MCP=on - the CLI loads external MCP servers incl. claude.ai connectors of this account"
         : "[MCP] External MCP servers and claude.ai connectors: blocked"
     );
-    const swept = sweepStaleSystemPromptFiles();
+    console.log(
+      isClaudeMemoryEnabled()
+        ? "[Memory] Claude Code auto-memory: ON (shared by all chats of this proxy)"
+        : "[Memory] Claude Code auto-memory: off"
+    );
+    const swept = sweepStaleTempFiles();
     if (swept > 0) {
-      console.log(`[Prompt] Removed ${swept} stale system prompt temp dir(s)`);
+      console.log(`[Temp] Removed ${swept} stale temp file(s) of earlier proxy runs`);
     }
     console.log("\nServer ready. Test with:");
     console.log(`  curl -X POST http://localhost:${port}/v1/chat/completions \\`);

@@ -25,6 +25,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { ClaudeSubprocess, isAuthError } from "../subprocess/manager.js";
+import { MCP_CONFIG_PREFIX, tempPath, trackTemp, releaseTemp } from "../subprocess/temp-files.js";
 import { extractText, type CliInput } from "../adapter/openai-to-cli.js";
 import { normalizeModelName } from "../adapter/cli-to-openai.js";
 import {
@@ -416,7 +417,8 @@ class ToolRun {
         tools: this.specs,
         onToolCall: (call) => this.onToolCall(call),
       });
-      this.configPath = path.join(os.tmpdir(), `cmap-mcp-${this.runId}.json`);
+      this.configPath = tempPath(MCP_CONFIG_PREFIX, `${this.runId}.json`);
+      trackTemp(this.configPath);
       const config = {
         mcpServers: {
           [MCP_SERVER_NAME]: {
@@ -685,7 +687,7 @@ class ToolRun {
       if (run === this) runsByCallId.delete(callId);
     }
     runs.delete(this);
-    if (this.configPath) fs.rm(this.configPath, { force: true }).catch(() => {});
+    if (this.configPath) releaseTemp(this.configPath);
   }
 }
 
