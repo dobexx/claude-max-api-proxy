@@ -23,6 +23,7 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 | `TOOL_MODE` | `mcp` | Wie Client-Tools (OpenAI `tools`) an Claude gehen. `mcp`: nativ über eine interne MCP-Bridge – Text und `tool_calls` werden live gestreamt. `prompt`: alter Modus (Tools im Prompt beschrieben, `<tool_call>`-Text wird ausgewertet, Antwort wird gepuffert). |
 | `TOOL_RESULT_TIMEOUT_MS` | `600000` (10 min) | Wie lange ein Lauf nach `finish_reason: tool_calls` auf die Tool-Ergebnisse des Clients wartet. Danach wird der CLI-Prozess beendet; späte Ergebnisse starten einen neuen Lauf mit dem vollständigen Verlauf. |
 | `TOOL_RUN_MAX_MS` | `3600000` (60 min) | Harte Obergrenze für einen CLI-Prozess über alle seine Tool-Runden hinweg. |
+| `THINKING_DISPLAY` | `summarized` | Wie Claudes Denkprozess zurückkommt. `summarized`: kurze Zusammenfassungen, gestreamt als `reasoning` (OpenWebUI zeigt sie als aufklappbaren Denk-Block). `omitted`: kein Denk-Text (Standard der CLI im Abo). `off`: Flag gar nicht setzen. Kennt die installierte CLI das Flag nicht, wird es automatisch weggelassen. |
 
 `/health` bleibt immer öffentlich (für Uptime-Checks und den Docker-Healthcheck).
 
@@ -36,7 +37,14 @@ Schickt ein Client `tools` mit (z. B. OpenWebUI mit nativem Function Calling), s
 
 Sicherheit: Die eingebauten Tools der CLI (Bash, Read, …) sind in diesem Modus abgeschaltet. Die MCP-Bridge lauscht nur auf `127.0.0.1` (zufälliger Port), jeder Lauf hat einen eigenen Endpunkt mit zufälligem Token.
 
-Einschränkungen: Bilder zusammen mit Client-Tools werden ignoriert (dazu bräuchte Claude das Read-Tool). Geparkte Läufe leben im Speicher des Proxys – bei einem Neustart oder Timeout greift der Rückfall: Der Verlauf wird als Text neu eingespielt.
+Einschränkungen: Geparkte Läufe leben im Speicher des Proxys – bei einem Neustart oder Timeout greift der Rückfall: Der Verlauf wird als Text neu eingespielt.
+
+## Bilder
+
+Bilder aus `image_url`-Blöcken (Data-URLs oder http(s)-URLs) gehen als **Bild-Blöcke direkt** an Claude (`--input-format stream-json`), ohne Temp-Dateien und ohne Read-Tool. Das funktioniert deshalb auch zusammen mit Client-Tools.
+
+- Unterstützt: PNG, JPEG, GIF, WebP (der Typ wird aus den Bytes erkannt, nicht aus der MIME-Angabe des Clients)
+- Pro Bild max. 20 MB. Nicht unterstützte Formate (z. B. HEIC) oder zu große Bilder werden übersprungen, Claude bekommt dann einen Hinweis und kann das dem Nutzer sagen.
 
 ## EasyPanel-Setup
 

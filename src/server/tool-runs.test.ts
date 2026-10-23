@@ -29,6 +29,11 @@ let prompt = "";
 let imageTypes = [];
 process.stdin.on("data", (c) => (prompt += c));
 process.stdin.on("end", () => {
+  // Flag probe (--print with empty stdin): behave like the real CLI
+  if (!prompt.trim()) {
+    process.stderr.write("Error: Input must be provided either through stdin or as a prompt argument when using --print\n");
+    process.exit(1);
+  }
   if (streamJsonIn) {
     const msg = JSON.parse(prompt.trim().split("\n")[0]);
     const blocks = msg.message.content;
@@ -90,6 +95,12 @@ async function main() {
   const tool = "mcp__client__" + list.result.tools[0].name;
   const two = prompt.includes("TWO");
   ev({ type: "message_start", message: { model: "claude-haiku-4-5-20251001", usage: { input_tokens: 10, output_tokens: 0 } } });
+  if (args.includes("--thinking-display")) {
+    ev({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } });
+    ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Erst das Tool, " } });
+    ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "dann antworten." } });
+    ev({ type: "content_block_stop", index: 0 });
+  }
   ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
   ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Ich " } });
   ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "schaue nach." } });
@@ -322,6 +333,16 @@ describe("native client tools via MCP", { timeout: 30_000 }, () => {
     } finally {
       delete process.env.TOOL_RESULT_TIMEOUT_MS;
     }
+  });
+
+  it("streams thinking summaries as reasoning before the text", async () => {
+    const r = await post({ model: "haiku", stream: true, messages: [{ role: "user", content: "Wetter?" }], tools: TOOLS });
+    const chunks = await readChunks(r);
+    const reasoning = chunks.map((c) => c.choices?.[0]?.delta?.reasoning || "").join("");
+    assert.equal(reasoning, "Erst das Tool, dann antworten.");
+    const firstReasoning = chunks.findIndex((c) => c.choices?.[0]?.delta?.reasoning);
+    const firstContent = chunks.findIndex((c) => c.choices?.[0]?.delta?.content);
+    assert.ok(firstReasoning >= 0 && firstReasoning < firstContent);
   });
 
   it("rejects MCP bridge calls without the run token", async () => {

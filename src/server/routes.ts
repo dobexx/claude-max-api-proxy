@@ -321,8 +321,9 @@ async function handleStreamingResponse(
 
     // Extended thinking: forward as OpenAI-style reasoning chunks
     // (OpenWebUI renders delta.reasoning as a collapsible "thinking" section).
-    // Note: subscription-billed thinking is often redacted/encrypted server-side
-    // (empty deltas with only estimated_tokens) - those are skipped here.
+    // Note: on subscription auth thinking text is omitted unless the CLI runs
+    // with --thinking-display summarized (see THINKING_DISPLAY) - empty
+    // deltas are skipped here.
     subprocess.on("thinking_delta", (event: ClaudeCliStreamEvent) => {
       const delta = event.event.delta;
       const text = (delta?.type === "thinking_delta" && delta.thinking) || "";

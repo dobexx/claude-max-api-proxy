@@ -149,6 +149,45 @@ export interface SubprocessEvents {
 const DEFAULT_TIMEOUT = 900000; // 15 minutes
 
 /**
+ * THINKING_DISPLAY controls how the CLI returns thinking text:
+ *   summarized (default) - streamed prose summaries of Claude's reasoning
+ *   omitted              - no thinking text (CLI default on subscription auth)
+ *   off / none / ""      - don't pass the flag at all
+ */
+export function resolveThinkingDisplay(): string | undefined {
+  const raw = (process.env.THINKING_DISPLAY ?? "summarized").trim().toLowerCase();
+  if (raw !== "summarized" && raw !== "omitted") return undefined;
+  // An unknown flag would make every request fail - only pass it when the
+  // installed CLI supports it (checked once, cached)
+  return cliSupportsThinkingDisplay() ? raw : undefined;
+}
+
+let thinkingDisplaySupport: boolean | null = null;
+
+function cliSupportsThinkingDisplay(): boolean {
+  if (thinkingDisplaySupport !== null) return thinkingDisplaySupport;
+  try {
+    // The flag is hidden from --help. Probe it without an API call: --print
+    // with empty stdin fails fast either way, but an unknown option fails
+    // with "unknown option" before input is even read.
+    const { bin, shell } = resolveClaudeBin();
+    const probe = spawnSync(
+      bin,
+      ["--print", "--thinking-display", "summarized", "--no-session-persistence"],
+      { encoding: "utf8", timeout: 15_000, shell, input: "" }
+    );
+    const output = `${probe.stdout || ""}${probe.stderr || ""}`;
+    thinkingDisplaySupport = !probe.error && !/unknown option/i.test(output);
+  } catch {
+    thinkingDisplaySupport = false;
+  }
+  if (!thinkingDisplaySupport) {
+    console.error("[Subprocess] Claude CLI has no --thinking-display flag - thinking summaries disabled");
+  }
+  return thinkingDisplaySupport;
+}
+
+/**
  * Detect authentication/authorization failures from CLI stderr or exit codes.
  * The CLI surfaces expired OAuth tokens as 401/authentication_error text on
  * stderr (there is no structured error type in stream-json), so we match the
@@ -464,6 +503,13 @@ export class ClaudeSubprocess extends EventEmitter {
 
     if (options.effort) {
       args.push("--effort", options.effort);
+    }
+
+    // Thinking text is omitted by default on subscription auth - request
+    // summaries so clients (OpenWebUI) can show what Claude is reasoning about
+    const thinkingDisplay = resolveThinkingDisplay();
+    if (thinkingDisplay) {
+      args.push("--thinking-display", thinkingDisplay);
     }
 
     // Inline images: stdin carries one stream-json user message instead of text
