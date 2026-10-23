@@ -20,8 +20,23 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 | `PORT` | `3456` | Port des HTTP-Servers |
 | `HOST` | `127.0.0.1` lokal / `0.0.0.0` im Docker-Image | Bind-Adresse |
 | `DEBUG` | – | `1` aktiviert Request-Logging |
+| `TOOL_MODE` | `mcp` | Wie Client-Tools (OpenAI `tools`) an Claude gehen. `mcp`: nativ über eine interne MCP-Bridge – Text und `tool_calls` werden live gestreamt. `prompt`: alter Modus (Tools im Prompt beschrieben, `<tool_call>`-Text wird ausgewertet, Antwort wird gepuffert). |
+| `TOOL_RESULT_TIMEOUT_MS` | `600000` (10 min) | Wie lange ein Lauf nach `finish_reason: tool_calls` auf die Tool-Ergebnisse des Clients wartet. Danach wird der CLI-Prozess beendet; späte Ergebnisse starten einen neuen Lauf mit dem vollständigen Verlauf. |
+| `TOOL_RUN_MAX_MS` | `3600000` (60 min) | Harte Obergrenze für einen CLI-Prozess über alle seine Tool-Runden hinweg. |
 
 `/health` bleibt immer öffentlich (für Uptime-Checks und den Docker-Healthcheck).
+
+## Client-Tools (Function Calling)
+
+Schickt ein Client `tools` mit (z. B. OpenWebUI mit nativem Function Calling), stellt der Proxy diese Tools der Claude CLI als **MCP-Server** bereit (`TOOL_MODE=mcp`, Default):
+
+1. Claude streamt Text und Tool-Aufrufe **live**. Der Proxy gibt sie als `content`- bzw. `tool_calls`-Chunks weiter und beendet die Antwort mit `finish_reason: "tool_calls"`.
+2. Der CLI-Prozess bleibt geparkt, während der Client die Tools ausführt.
+3. Die Folgeanfrage mit den `role: "tool"`-Ergebnissen wird über die `tool_call_id` dem geparkten Prozess zugeordnet. Claude macht im **selben Prozess** weiter und streamt in die neue Antwort.
+
+Sicherheit: Die eingebauten Tools der CLI (Bash, Read, …) sind in diesem Modus abgeschaltet. Die MCP-Bridge lauscht nur auf `127.0.0.1` (zufälliger Port), jeder Lauf hat einen eigenen Endpunkt mit zufälligem Token.
+
+Einschränkungen: Bilder zusammen mit Client-Tools werden ignoriert (dazu bräuchte Claude das Read-Tool). Geparkte Läufe leben im Speicher des Proxys – bei einem Neustart oder Timeout greift der Rückfall: Der Verlauf wird als Text neu eingespielt.
 
 ## EasyPanel-Setup
 
