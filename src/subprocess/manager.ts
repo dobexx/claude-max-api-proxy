@@ -8,7 +8,7 @@
 import { spawn, spawnSync, ChildProcess } from "child_process";
 import { EventEmitter } from "events";
 import fs from "fs/promises";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync, rmSync } from "fs";
 import path from "path";
 import type {
   ClaudeCliMessage,
@@ -361,6 +361,73 @@ function killProcessTree(
   }
 }
 
+// ─── System prompt temp files ────────────────────────────────────────────────
+
+const SYSTEM_PROMPT_DIR_PREFIX = "cmap-sp-";
+/** Temp dirs of CLI processes that have not exited yet */
+const liveSystemPromptDirs = new Set<string>();
+
+function removeSystemPromptDir(dir: string): void {
+  liveSystemPromptDirs.delete(dir);
+  fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+}
+
+/**
+ * Synchronously remove all system prompt temp files still in use. Called on
+ * process exit (SIGTERM on redeploy) so client prompts never outlive the proxy.
+ */
+export function cleanupLiveSystemPromptFiles(): void {
+  for (const dir of liveSystemPromptDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+  liveSystemPromptDirs.clear();
+}
+
+/**
+ * Remove system prompt temp dirs left behind by an earlier crash (SIGKILL,
+ * OOM). Dir names carry the owning proxy's PID (cmap-sp-<pid>-XXXXXX); only
+ * dirs whose proxy process is gone are removed, so a second instance sharing
+ * /tmp never deletes files of a live run.
+ */
+export function sweepStaleSystemPromptFiles(): number {
+  let removed = 0;
+  try {
+    const tmp = os.tmpdir();
+    for (const name of readdirSync(tmp)) {
+      const m = name.match(/^cmap-sp-(\d+)-/);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      const dir = path.join(tmp, name);
+      if (pid === process.pid) {
+        // Our PID, but not one of our live runs: left over by an earlier
+        // process with the same PID (containers always run the proxy as PID 1)
+        if (liveSystemPromptDirs.has(dir)) continue;
+      } else if (isProcessAlive(pid)) {
+        continue;
+      }
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        removed++;
+      } catch {}
+    }
+  } catch {}
+  return removed;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: exists but belongs to another user - leave its files alone
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+process.on("exit", cleanupLiveSystemPromptFiles);
+
 export class ClaudeSubprocess extends EventEmitter {
   private process: ChildProcess | null = null;
   private buffer: string = "";
@@ -377,7 +444,10 @@ export class ClaudeSubprocess extends EventEmitter {
    * per-argument limit (E2BIG) and must not show up in process listings.
    */
   private async writeSystemPromptFile(text: string): Promise<string> {
-    this.systemPromptDir = await fs.mkdtemp(path.join(os.tmpdir(), "cmap-sp-"));
+    this.systemPromptDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), `${SYSTEM_PROMPT_DIR_PREFIX}${process.pid}-`)
+    );
+    liveSystemPromptDirs.add(this.systemPromptDir);
     const file = path.join(this.systemPromptDir, "system-prompt.md");
     await fs.writeFile(file, text, { encoding: "utf8", mode: 0o600 });
     this.systemPromptFile = file;
@@ -388,9 +458,7 @@ export class ClaudeSubprocess extends EventEmitter {
     const dir = this.systemPromptDir;
     this.systemPromptDir = null;
     this.systemPromptFile = null;
-    if (dir) {
-      fs.rm(dir, { recursive: true, force: true }).catch(() => {});
-    }
+    if (dir) removeSystemPromptDir(dir);
   }
 
   /**

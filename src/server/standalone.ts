@@ -10,7 +10,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { startServer, stopServer } from "./index.js";
-import { verifyClaude } from "../subprocess/manager.js";
+import { verifyClaude, sweepStaleSystemPromptFiles } from "../subprocess/manager.js";
 import { initApiKey, initAdminKey } from "./auth.js";
 import { getSystemPromptMode, isOpenClawMappingEnabled } from "../adapter/system-prompt.js";
 
@@ -126,6 +126,10 @@ async function main(): Promise<void> {
     console.log(
       `[Prompt] System prompt mode: ${getSystemPromptMode()} | OpenClaw tool mapping: ${isOpenClawMappingEnabled() ? "on" : "off"}`
     );
+    const swept = sweepStaleSystemPromptFiles();
+    if (swept > 0) {
+      console.log(`[Prompt] Removed ${swept} stale system prompt temp dir(s)`);
+    }
     console.log("\nServer ready. Test with:");
     console.log(`  curl -X POST http://localhost:${port}/v1/chat/completions \\`);
     console.log(`    -H "Content-Type: application/json" \\`);

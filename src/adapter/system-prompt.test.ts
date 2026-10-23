@@ -11,7 +11,11 @@ import os from "os";
 import path from "path";
 import { openaiToCli, openaiToCliDelta, extractSystemPrompt } from "./openai-to-cli.js";
 import { getSystemPromptMode, isOpenClawMappingEnabled } from "./system-prompt.js";
-import { ClaudeSubprocess } from "../subprocess/manager.js";
+import {
+  ClaudeSubprocess,
+  cleanupLiveSystemPromptFiles,
+  sweepStaleSystemPromptFiles,
+} from "../subprocess/manager.js";
 import type { OpenAIChatRequest } from "../types/openai.js";
 
 const savedEnv = { ...process.env };
@@ -234,5 +238,71 @@ describe("CLI wiring", { timeout: 20_000 }, () => {
   it("no system message: no system prompt flags", async () => {
     const r = await runCli(req({ messages: [{ role: "user", content: "Hi" }] }));
     assert.equal(r.file, null);
+  });
+});
+
+describe("system prompt temp file hygiene", () => {
+  it("temp dir name carries the proxy PID", async () => {
+    const r = await runCli(req());
+    assert.match(path.basename(path.dirname(r.file!)), new RegExp(`^cmap-sp-${process.pid}-`));
+  });
+
+  it("startup sweep removes dirs of dead proxies and stale own-PID dirs only", () => {
+    const tmp = os.tmpdir();
+    const dead = fs.mkdtempSync(path.join(tmp, "cmap-sp-999999-"));
+    // Same PID but not a live run (container restart: proxy is PID 1 again)
+    const staleOwn = fs.mkdtempSync(path.join(tmp, `cmap-sp-${process.pid}-`));
+    const unrelated = fs.mkdtempSync(path.join(tmp, "cmap-spx-"));
+    fs.writeFileSync(path.join(dead, "system-prompt.md"), "alt");
+    try {
+      const removed = sweepStaleSystemPromptFiles();
+      assert.ok(removed >= 2);
+      assert.equal(fs.existsSync(dead), false, "dead proxy's dir removed");
+      assert.equal(fs.existsSync(staleOwn), false, "stale own-PID dir removed");
+      assert.equal(fs.existsSync(unrelated), true, "unrelated dir kept");
+    } finally {
+      for (const d of [dead, staleOwn, unrelated]) fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("startup sweep keeps files of live runs", async () => {
+    const hang = path.join(tmpDir, "claude-hang2");
+    fs.writeFileSync(hang, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n", { mode: 0o755 });
+    const prevBin = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = hang;
+    const sp = new ClaudeSubprocess();
+    const closed = new Promise<void>((resolve) => sp.on("close", () => resolve()));
+    try {
+      await sp.start("x", { model: "haiku", systemPrompt: "live", systemPromptMode: "append" });
+      const live = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(`cmap-sp-${process.pid}-`));
+      assert.equal(live.length, 1);
+      sweepStaleSystemPromptFiles();
+      assert.equal(fs.existsSync(path.join(os.tmpdir(), live[0])), true, "live run's file kept");
+      sp.kill("SIGKILL");
+      await closed;
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(fs.existsSync(path.join(os.tmpdir(), live[0])), false, "removed after kill");
+    } finally {
+      process.env.CLAUDE_BIN = prevBin;
+    }
+  });
+
+  it("exit cleanup removes files of CLI processes that are still running", async () => {
+    // Fake CLI that hangs: the close handler never runs before cleanup
+    const hang = path.join(tmpDir, "claude-hang");
+    fs.writeFileSync(hang, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n", { mode: 0o755 });
+    const prevBin = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = hang;
+    const sp = new ClaudeSubprocess();
+    try {
+      await sp.start("x", { model: "haiku", systemPrompt: "geheim", systemPromptMode: "append" });
+      const live = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(`cmap-sp-${process.pid}-`));
+      assert.equal(live.length, 1);
+      cleanupLiveSystemPromptFiles();
+      assert.equal(fs.existsSync(path.join(os.tmpdir(), live[0])), false);
+    } finally {
+      sp.kill("SIGKILL");
+      process.env.CLAUDE_BIN = prevBin;
+    }
   });
 });

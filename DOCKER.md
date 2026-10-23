@@ -30,6 +30,8 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 
 `/health` bleibt immer öffentlich (für Uptime-Checks und den Docker-Healthcheck).
 
+> **Hinweis zu `SYSTEM_PROMPT_MODE` und laufenden Chats:** Claude Code merkt sich den Systemprompt beim ersten Request einer Session und verwendet ihn bei Folge-Turns (`--resume`) unverändert weiter. Änderst du den Systemprompt in OpenWebUI mitten in einem Chat, greift die Änderung erst in einem **neuen Chat**.
+
 ## Client-Tools (Function Calling)
 
 Schickt ein Client `tools` mit (z. B. OpenWebUI mit nativem Function Calling), stellt der Proxy diese Tools der Claude CLI als **MCP-Server** bereit (`TOOL_MODE=mcp`, Default):
