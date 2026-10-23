@@ -3,6 +3,7 @@
  */
 
 import type { OpenAIChatRequest, OpenAIContentBlock, OpenAIToolDefinition } from "../types/openai.js";
+import { getSystemPromptMode } from "./system-prompt.js";
 
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -28,6 +29,14 @@ export interface CliInput {
   tools?: OpenAIToolDefinition[];
   /** True when the client sent tools - the CLI's built-in tools must be disabled then */
   hasClientTools?: boolean;
+  /**
+   * Client system prompt passed to the CLI as a real system prompt
+   * (SYSTEM_PROMPT_MODE=append|replace). Unset in wrap mode or when the
+   * request has no system message.
+   */
+  systemPrompt?: string;
+  /** How systemPrompt is applied: appended to or replacing Claude Code's default */
+  systemPromptMode?: "append" | "replace";
 }
 
 const EFFORT_LEVELS: ClaudeEffort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -164,14 +173,19 @@ function stripOpenClawTooling(text: string): string {
  * We format the messages into a readable format that preserves context.
  */
 export function messagesToPrompt(
-  messages: OpenAIChatRequest["messages"]
+  messages: OpenAIChatRequest["messages"],
+  opts: { inlineSystem?: boolean } = {}
 ): string {
+  const inlineSystem = opts.inlineSystem !== false;
   const parts: string[] = [];
 
   for (const msg of messages) {
     const text = extractText(msg.content);
     switch (msg.role) {
       case "system":
+        // append/replace mode: system messages travel as the CLI's system
+        // prompt (see extractSystemPrompt) - not inside the user prompt
+        if (!inlineSystem) break;
         // System messages become context instructions
         // Strip OpenClaw tooling sections that conflict with Claude Code's native tools
         parts.push(`<system>\n${stripOpenClawTooling(text)}\n</system>\n`);
@@ -242,6 +256,36 @@ export function toolsToPromptBlock(tools: OpenAIToolDefinition[]): string {
 }
 
 /**
+ * Collect all system messages of a request into one system prompt
+ * (OpenClaw tooling sections stripped). Empty string if there are none.
+ */
+export function extractSystemPrompt(messages: OpenAIChatRequest["messages"]): string {
+  return messages
+    .filter((m) => m.role === "system")
+    .map((m) => stripOpenClawTooling(extractText(m.content)))
+    .filter((t) => t.trim().length > 0)
+    .join("\n\n")
+    .trim();
+}
+
+/**
+ * Resolve how system messages are handled for this request. In append/replace
+ * mode the system prompt is always taken from the FULL message list - also on
+ * resumed turns, so the CLI gets the current system prompt every time.
+ */
+function resolveSystemPrompt(
+  request: OpenAIChatRequest
+): { inlineSystem: boolean; fields: Pick<CliInput, "systemPrompt" | "systemPromptMode"> } {
+  const mode = getSystemPromptMode();
+  if (mode === "wrap") return { inlineSystem: true, fields: {} };
+  const systemPrompt = extractSystemPrompt(request.messages);
+  return {
+    inlineSystem: false,
+    fields: systemPrompt ? { systemPrompt, systemPromptMode: mode } : {},
+  };
+}
+
+/**
  * Convert OpenAI chat request to CLI input format
  */
 export function openaiToCli(
@@ -250,7 +294,14 @@ export function openaiToCli(
 ): CliInput {
   const images = extractImages(request.messages);
   const tools = request.tools;
-  let prompt = messagesToPrompt(request.messages);
+  const system = resolveSystemPrompt(request);
+  let prompt = messagesToPrompt(request.messages, { inlineSystem: system.inlineSystem });
+  if (!prompt) {
+    // Request carries nothing but system messages: the CLI needs some stdin,
+    // so inline them as before instead of sending an empty prompt
+    prompt = messagesToPrompt(request.messages);
+    system.fields = {};
+  }
   // Legacy prompt mode describes the tools in the prompt; MCP mode exposes
   // them natively and must not ask for <tool_call> text envelopes
   if (tools && tools.length > 0 && opts.embedTools !== false) {
@@ -261,6 +312,7 @@ export function openaiToCli(
     model: extractModel(request.model),
     sessionId: request.user, // Use OpenAI's user field for session mapping
     effort: extractEffort(request),
+    ...system.fields,
     ...(images.length > 0 ? { images } : {}),
     ...(tools && tools.length > 0 ? { tools, hasClientTools: true } : {}),
   };
@@ -284,9 +336,14 @@ export function openaiToCliDelta(
   const source = newMessages.length ? newMessages : request.messages;
   const images = extractImages(source);
   const tools = request.tools;
+  const system = resolveSystemPrompt(request);
   // Fallback to full history if nothing new was found (shouldn't happen,
   // but never send an empty prompt to the CLI)
-  let prompt = messagesToPrompt(source);
+  let prompt = messagesToPrompt(source, { inlineSystem: system.inlineSystem });
+  if (!prompt) {
+    prompt = messagesToPrompt(source);
+    system.fields = {};
+  }
   if (tools && tools.length > 0 && opts.embedTools !== false) {
     prompt = toolsToPromptBlock(tools) + "\n\n" + prompt;
   }
@@ -295,6 +352,7 @@ export function openaiToCliDelta(
     model: extractModel(request.model),
     sessionId: request.user,
     effort: extractEffort(request),
+    ...system.fields,
     ...(images.length > 0 ? { images } : {}),
     ...(tools && tools.length > 0 ? { tools, hasClientTools: true } : {}),
   };

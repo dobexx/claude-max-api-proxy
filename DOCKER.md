@@ -25,6 +25,8 @@ Damit lässt sich der Proxy direkt aus diesem Repo auf EasyPanel (oder jedem and
 | `TOOL_RESULT_TIMEOUT_MS` | `600000` (10 min) | Wie lange ein Lauf nach `finish_reason: tool_calls` auf die Tool-Ergebnisse des Clients wartet. Danach wird der CLI-Prozess beendet; späte Ergebnisse starten einen neuen Lauf mit dem vollständigen Verlauf. |
 | `TOOL_RUN_MAX_MS` | `3600000` (60 min) | Harte Obergrenze für einen CLI-Prozess über alle seine Tool-Runden hinweg. |
 | `THINKING_DISPLAY` | `summarized` | Wie Claudes Denkprozess zurückkommt. `summarized`: kurze Zusammenfassungen, gestreamt als `reasoning` (OpenWebUI zeigt sie als aufklappbaren Denk-Block). `omitted`: kein Denk-Text (Standard der CLI im Abo). `off`: Flag gar nicht setzen. Kennt die installierte CLI das Flag nicht, wird es automatisch weggelassen. |
+| `SYSTEM_PROMPT_MODE` | `append` | Wie der Systemprompt des Clients (OpenAI `system`-Nachrichten, z. B. aus OpenWebUI) bei Claude ankommt. `append`: wird an den Systemprompt von Claude Code **angehängt** – echte System-Ebene, Claude-Code-Verhalten (Tools, Skills) bleibt. `replace`: **ersetzt** den Systemprompt von Claude Code komplett – volle Kontrolle über Ton und Rolle, aber die Tool- und Skill-Anleitungen von Claude Code fallen weg. `wrap`: alter Modus – Systemprompt wird als `<system>`-Block in die Nutzernachricht gesetzt. Der Prompt wird über eine temporäre Datei (0600) übergeben und danach gelöscht. |
+| `OPENCLAW_TOOL_MAPPING` | `on` | Hängt eine Zuordnung von OpenClaw-Tool-Namen (`exec`, `memory_search`, …) an den Systemprompt, wenn der Client keine eigenen Tools schickt. Nur für OpenClaw sinnvoll – **für OpenWebUI `off` setzen**. |
 
 `/health` bleibt immer öffentlich (für Uptime-Checks und den Docker-Healthcheck).
 

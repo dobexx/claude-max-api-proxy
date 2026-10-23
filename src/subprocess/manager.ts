@@ -27,6 +27,7 @@ import {
   isThinkingDelta,
 } from "../types/claude-cli.js";
 import type { ClaudeModel, CliImage, ClaudeEffort } from "../adapter/openai-to-cli.js";
+import { isOpenClawMappingEnabled } from "../adapter/system-prompt.js";
 import os from "os";
 
 export interface SubprocessOptions {
@@ -44,6 +45,10 @@ export interface SubprocessOptions {
   images?: CliImage[];
   /** MCP config file exposing client tools (native tool mode, see tool-runs.ts) */
   mcpConfigPath?: string;
+  /** Client system prompt (SYSTEM_PROMPT_MODE=append|replace), passed via a temp file */
+  systemPrompt?: string;
+  /** append: added to Claude Code's default system prompt; replace: replaces it */
+  systemPromptMode?: "append" | "replace";
 }
 
 /** Max size per image (decoded), 20 MB - generous but bounded */
@@ -363,6 +368,30 @@ export class ClaudeSubprocess extends EventEmitter {
   private exitCode: number | null = null;
   private timeoutId: NodeJS.Timeout | null = null;
   private isKilled: boolean = false;
+  private systemPromptDir: string | null = null;
+  private systemPromptFile: string | null = null;
+
+  /**
+   * Write the client system prompt to a private temp file. A file instead of
+   * an argv string: system prompts (OpenWebUI + RAG context) can exceed the
+   * per-argument limit (E2BIG) and must not show up in process listings.
+   */
+  private async writeSystemPromptFile(text: string): Promise<string> {
+    this.systemPromptDir = await fs.mkdtemp(path.join(os.tmpdir(), "cmap-sp-"));
+    const file = path.join(this.systemPromptDir, "system-prompt.md");
+    await fs.writeFile(file, text, { encoding: "utf8", mode: 0o600 });
+    this.systemPromptFile = file;
+    return file;
+  }
+
+  private cleanupSystemPromptFile(): void {
+    const dir = this.systemPromptDir;
+    this.systemPromptDir = null;
+    this.systemPromptFile = null;
+    if (dir) {
+      fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 
   /**
    * Start the Claude CLI subprocess with the given prompt
@@ -387,6 +416,10 @@ export class ClaudeSubprocess extends EventEmitter {
     const stdinPayload =
       inlineImages.length > 0 ? buildStreamJsonUserMessage(prompt, inlineImages) : prompt;
     inlineImages = []; // don't hold base64 longer than needed
+
+    if (options.systemPrompt && options.systemPromptMode) {
+      await this.writeSystemPromptFile(options.systemPrompt);
+    }
 
     const args = this.buildArgs(options, stdinPayload !== prompt);
     const timeout = options.timeout || DEFAULT_TIMEOUT;
@@ -413,6 +446,7 @@ export class ClaudeSubprocess extends EventEmitter {
         // Handle spawn errors (e.g., claude not found)
         this.process.on("error", (err) => {
           this.clearTimeout();
+          this.cleanupSystemPromptFile();
           if (err.message.includes("ENOENT")) {
             reject(
               new Error(
@@ -463,6 +497,7 @@ export class ClaudeSubprocess extends EventEmitter {
             console.error(`[Subprocess] Process closed with code: ${code}`);
           }
           this.clearTimeout();
+          this.cleanupSystemPromptFile();
           // Process any remaining buffer
           if (this.buffer.trim()) {
             this.processBuffer();
@@ -474,6 +509,7 @@ export class ClaudeSubprocess extends EventEmitter {
         resolve();
       } catch (err) {
         this.clearTimeout();
+        this.cleanupSystemPromptFile();
         reject(err);
       }
     });
@@ -495,9 +531,18 @@ export class ClaudeSubprocess extends EventEmitter {
       // Prompt is passed via stdin (avoids E2BIG on large inputs)
     ];
 
+    // Client system prompt (SYSTEM_PROMPT_MODE=append|replace). replace swaps
+    // out Claude Code's default system prompt; append adds to it.
+    if (this.systemPromptFile && options.systemPromptMode === "replace") {
+      args.push("--system-prompt-file", this.systemPromptFile);
+    } else if (this.systemPromptFile) {
+      args.push("--append-system-prompt-file", this.systemPromptFile);
+    }
+
     // The OpenClaw mapping points tool names at Bash/Read/... - meaningless
-    // (and misleading) when the client brings its own tools instead
-    if (!options.disableBuiltinTools) {
+    // (and misleading) when the client brings its own tools instead.
+    // OPENCLAW_TOOL_MAPPING=off drops it for non-OpenClaw clients (OpenWebUI).
+    if (!options.disableBuiltinTools && isOpenClawMappingEnabled()) {
       args.push("--append-system-prompt", OPENCLAW_TOOL_MAPPING_PROMPT);
     }
 

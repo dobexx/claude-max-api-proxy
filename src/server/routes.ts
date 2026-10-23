@@ -631,6 +631,8 @@ async function handleStreamingResponse(
       effort: cliInput.effort,
       disableBuiltinTools: cliInput.hasClientTools,
       images: cliInput.images,
+      systemPrompt: cliInput.systemPrompt,
+      systemPromptMode: cliInput.systemPromptMode,
     }).catch((err) => {
       console.error("[Streaming] Subprocess start error:", err);
       reject(err);
@@ -772,6 +774,8 @@ async function handleNonStreamingResponse(
         effort: cliInput.effort,
         disableBuiltinTools: cliInput.hasClientTools,
         images: cliInput.images,
+        systemPrompt: cliInput.systemPrompt,
+        systemPromptMode: cliInput.systemPromptMode,
       })
       .catch((error) => {
         res.status(500).json({

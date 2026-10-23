@@ -449,6 +449,8 @@ class ToolRun {
         mcpConfigPath: this.configPath,
         timeout: toolRunMaxMs(),
         images: cliInput.images,
+        systemPrompt: cliInput.systemPrompt,
+        systemPromptMode: cliInput.systemPromptMode,
       });
       delete cliInput.images; // don't hold base64 for the run's lifetime
     } catch (err) {

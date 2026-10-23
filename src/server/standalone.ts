@@ -12,6 +12,7 @@ import { existsSync, readdirSync, readFileSync } from "fs";
 import { startServer, stopServer } from "./index.js";
 import { verifyClaude } from "../subprocess/manager.js";
 import { initApiKey, initAdminKey } from "./auth.js";
+import { getSystemPromptMode, isOpenClawMappingEnabled } from "../adapter/system-prompt.js";
 
 /**
  * Minimal .env loader: only sets variables that are not already present in
@@ -122,6 +123,9 @@ async function main(): Promise<void> {
   // Start server
   try {
     await startServer({ port, host });
+    console.log(
+      `[Prompt] System prompt mode: ${getSystemPromptMode()} | OpenClaw tool mapping: ${isOpenClawMappingEnabled() ? "on" : "off"}`
+    );
     console.log("\nServer ready. Test with:");
     console.log(`  curl -X POST http://localhost:${port}/v1/chat/completions \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
