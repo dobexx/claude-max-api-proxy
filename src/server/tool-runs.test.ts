@@ -360,3 +360,20 @@ describe("native client tools via MCP", { timeout: 30_000 }, () => {
     assert.equal(probe.status, 401);
   });
 });
+
+describe("model names", () => {
+  it("lists the 5.5 models and keeps minor versions in responses", async () => {
+    const res = await fetch(`${baseUrl}/v1/models`);
+    const ids = ((await res.json()) as any).data.map((m: any) => m.id);
+    for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]) {
+      assert.ok(ids.includes(id), `missing ${id}`);
+    }
+    const { normalizeModelName } = await import("../adapter/cli-to-openai.js");
+    assert.equal(normalizeModelName("claude-sonnet-5-5"), "claude-sonnet-5-5");
+    assert.equal(normalizeModelName("claude-haiku-4-5-20251001"), "claude-haiku-4-5");
+    assert.equal(normalizeModelName("claude-sonnet-4-20250514"), "claude-sonnet-4");
+    const { extractModel } = await import("../adapter/openai-to-cli.js");
+    assert.equal(extractModel("claude-sonnet-5-5"), "sonnet");
+    assert.equal(extractModel("claude-code-cli/claude-haiku-5-5"), "haiku");
+  });
+});

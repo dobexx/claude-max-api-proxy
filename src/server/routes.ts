@@ -12,6 +12,7 @@ import { openaiToCli, openaiToCliDelta } from "../adapter/openai-to-cli.js";
 import {
   cliResultToOpenai,
   createDoneChunk,
+  normalizeModelName,
 } from "../adapter/cli-to-openai.js";
 import { getSession, setSession, clearSession } from "../subprocess/session-store.js";
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
@@ -453,7 +454,19 @@ async function handleStreamingResponse(
 
     // Handle final assistant message (for model name)
     subprocess.on("assistant", (message: ClaudeCliAssistant) => {
-      lastModel = message.message.model;
+      lastModel = normalizeModelName(message.message.model);
+    });
+
+    // The model is known from the very first event (system init) - use it
+    // right away so early chunks don't carry a placeholder model name
+    subprocess.on("message", (msg: { type?: string; subtype?: string; model?: string; event?: { type?: string; message?: { model?: string } } }) => {
+      const model =
+        msg.type === "system" && msg.subtype === "init"
+          ? msg.model
+          : msg.type === "stream_event" && msg.event?.type === "message_start"
+            ? msg.event.message?.model
+            : undefined;
+      if (model) lastModel = normalizeModelName(model);
     });
 
     subprocess.on("result", (result: ClaudeCliResult) => {
@@ -787,10 +800,12 @@ export function handleModels(_req: Request, res: Response): void {
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-sonnet-5",
+    "claude-sonnet-5-5",
     "claude-opus-5",
     "claude-opus-5-5",
     "claude-haiku-4",
     "claude-haiku-4-5",
+    "claude-haiku-5-5",
   ];
   res.json({
     object: "list",

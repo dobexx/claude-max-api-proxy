@@ -470,6 +470,12 @@ class ToolRun {
   // ─── CLI output ────────────────────────────────────────────────
 
   private onMessage(msg: ClaudeCliMessage): void {
+    // The model is known from the first event (system init)
+    const init = msg as { type?: string; subtype?: string; model?: string };
+    if (init.type === "system" && init.subtype === "init" && init.model) {
+      this.model = normalizeModelName(init.model);
+      return;
+    }
     if (msg.type !== "stream_event") return;
     const ev = (msg as unknown as { event: RawStreamEvent }).event;
     const sink = this.sink;

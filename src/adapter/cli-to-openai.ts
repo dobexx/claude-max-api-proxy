@@ -113,14 +113,18 @@ export function cliResultToOpenai(
 }
 
 /**
- * Normalize Claude model names to a consistent format
- * e.g., "claude-sonnet-4-5-20250929" -> "claude-sonnet-4"
+ * Normalize Claude model names to a consistent format, keeping the version
+ * but dropping date suffixes:
+ *   "claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
+ *   "claude-opus-5-5"            -> "claude-opus-5-5"
+ *   "claude-haiku-4-5-20251001"  -> "claude-haiku-4-5"
+ *   "claude-opus-5"              -> "claude-opus-5"
  */
 export function normalizeModelName(model: string | undefined): string {
   if (!model) return "claude-sonnet-4";
-  // Keep the major version visible: "claude-opus-5-..." -> "claude-opus-5"
-  const m = model.match(/claude-(opus|sonnet|haiku)-(\d+)/);
-  if (m) return `claude-${m[1]}-${m[2]}`;
+  // Major + optional single-digit minor; a date suffix (8 digits) is not a minor
+  const m = model.match(/claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?!\d)/);
+  if (m) return m[3] ? `claude-${m[1]}-${m[2]}-${m[3]}` : `claude-${m[1]}-${m[2]}`;
   if (model.includes("opus")) return "claude-opus-4";
   if (model.includes("sonnet")) return "claude-sonnet-4";
   if (model.includes("haiku")) return "claude-haiku-4";
