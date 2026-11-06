@@ -18,13 +18,27 @@ export interface ServerConfig {
 let serverInstance: Server | null = null;
 
 /**
+ * Maximum accepted request body. OpenWebUI resends the whole chat on every
+ * turn - including tool results that carry base64 images (e.g. rendered PDF
+ * pages) - so long tool-heavy chats easily exceed a few MB. Override via
+ * BODY_LIMIT (bytes or a size string like "100mb").
+ */
+export const DEFAULT_BODY_LIMIT = "64mb";
+
+export function getBodyLimit(): string {
+  const raw = (process.env.BODY_LIMIT || "").trim();
+  if (!raw) return DEFAULT_BODY_LIMIT;
+  return /^\d+$/.test(raw) ? `${raw}b` : raw;
+}
+
+/**
  * Create and configure the Express app
  */
 function createApp(): Express {
   const app = express();
 
   // Middleware: use raw body parser + manual JSON parse for better error diagnostics
-  app.use(express.raw({ type: "application/json", limit: "10mb" }));
+  app.use(express.raw({ type: "application/json", limit: getBodyLimit() }));
   app.use((req: Request, _res: Response, next: NextFunction) => {
     if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
       const raw = req.body.toString("utf8");
@@ -97,7 +111,24 @@ function createApp(): Express {
   });
 
   // Error handler
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+    const bodyErr = err as Error & { type?: string; status?: number; length?: number; limit?: number };
+    if (bodyErr.type === "entity.too.large") {
+      const mb = (n?: number) => (typeof n === "number" ? `${(n / 1048576).toFixed(1)} MB` : "unknown");
+      console.error(
+        `[Server Error]: request entity too large (${mb(bodyErr.length)} > limit ${mb(bodyErr.limit)}) ${req.method} ${req.originalUrl}`
+      );
+      res.status(413).json({
+        error: {
+          message:
+            `Request too large for the proxy (${mb(bodyErr.length)}, limit ${mb(bodyErr.limit)}). ` +
+            "Start a new chat or raise BODY_LIMIT on the proxy.",
+          type: "invalid_request_error",
+          code: "request_too_large",
+        },
+      });
+      return;
+    }
     console.error("[Server Error]:", err.message);
     res.status(500).json({
       error: {

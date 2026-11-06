@@ -9,7 +9,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from "fs";
-import { startServer, stopServer } from "./index.js";
+import { startServer, stopServer, getBodyLimit } from "./index.js";
 import { verifyClaude, isExternalMcpAllowed, isClaudeMemoryEnabled } from "../subprocess/manager.js";
 import { sweepStaleTempFiles } from "../subprocess/temp-files.js";
 import { initApiKey, initAdminKey } from "./auth.js";
@@ -137,6 +137,7 @@ async function main(): Promise<void> {
         ? "[Memory] Claude Code auto-memory: ON (shared by all chats of this proxy)"
         : "[Memory] Claude Code auto-memory: off"
     );
+    console.log(`[HTTP] Max request body: ${getBodyLimit()}`);
     const swept = sweepStaleTempFiles();
     if (swept > 0) {
       console.log(`[Temp] Removed ${swept} stale temp file(s) of earlier proxy runs`);
