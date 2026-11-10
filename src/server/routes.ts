@@ -13,6 +13,7 @@ import {
   cliResultToOpenai,
   createDoneChunk,
   normalizeModelName,
+  LastCallUsage,
 } from "../adapter/cli-to-openai.js";
 import { getSession, setSession, clearSession } from "../subprocess/session-store.js";
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
@@ -281,6 +282,7 @@ async function handleStreamingResponse(
   return new Promise<void>((resolve, reject) => {
     let isFirst = true;
     let lastModel = "claude-sonnet-4";
+    const lastCall = new LastCallUsage();
     let isComplete = false;
     let hasEmittedText = false;
     let toolCallIndex = 0;
@@ -460,6 +462,7 @@ async function handleStreamingResponse(
     // The model is known from the very first event (system init) - use it
     // right away so early chunks don't carry a placeholder model name
     subprocess.on("message", (msg: { type?: string; subtype?: string; model?: string; event?: { type?: string; message?: { model?: string } } }) => {
+      lastCall.observe(msg);
       const model =
         msg.type === "system" && msg.subtype === "init"
           ? msg.model
@@ -546,21 +549,8 @@ async function handleStreamingResponse(
       if (!res.writableEnded) {
         // Send final done chunk with finish_reason and usage data
         const doneChunk = createDoneChunk(requestId, lastModel);
-        if (result.usage) {
-          doneChunk.usage = {
-            prompt_tokens: result.usage.input_tokens || 0,
-            completion_tokens: result.usage.output_tokens || 0,
-            total_tokens:
-              (result.usage.input_tokens || 0) + (result.usage.output_tokens || 0),
-            // Prompt caching is automatic in Claude Code - surface the metrics
-            ...(result.usage.cache_read_input_tokens
-              ? { cache_read_input_tokens: result.usage.cache_read_input_tokens }
-              : {}),
-            ...(result.usage.cache_creation_input_tokens
-              ? { cache_creation_input_tokens: result.usage.cache_creation_input_tokens }
-              : {}),
-          };
-        }
+        const usage = lastCall.usage(result.usage);
+        if (usage) doneChunk.usage = usage;
         res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
         res.write("data: [DONE]\n\n");
         res.end();
@@ -652,6 +642,8 @@ async function handleNonStreamingResponse(
 ): Promise<void> {
   return new Promise((resolve) => {
     let finalResult: ClaudeCliResult | null = null;
+    const lastCall = new LastCallUsage();
+    subprocess.on("message", (msg: unknown) => lastCall.observe(msg));
     // DISABLED: see tool call forwarding comment in handleStreamingResponse
     // const accumulatedToolCalls: OpenAIToolCall[] = [];
     //
@@ -730,19 +722,13 @@ async function handleNonStreamingResponse(
                 },
                 finish_reason: "tool_calls",
               }],
-              usage: {
-                prompt_tokens: finalResult.usage?.input_tokens || 0,
-                completion_tokens: finalResult.usage?.output_tokens || 0,
-                total_tokens:
-                  (finalResult.usage?.input_tokens || 0) +
-                  (finalResult.usage?.output_tokens || 0),
-              },
+              usage: lastCall.usage(finalResult.usage),
             });
             resolve();
             return;
           }
         }
-        res.json(cliResultToOpenai(finalResult, requestId));
+        res.json(cliResultToOpenai(finalResult, requestId, undefined, lastCall.usage(finalResult.usage)));
       } else {
         if (sessionCtx.resume && sessionCtx.sessionKey) {
           clearSession(sessionCtx.sessionKey);

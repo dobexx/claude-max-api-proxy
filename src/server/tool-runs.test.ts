@@ -94,7 +94,10 @@ async function main() {
   const list = await rpc("tools/list", {}, 1);
   const tool = "mcp__client__" + list.result.tools[0].name;
   const two = prompt.includes("TWO");
-  ev({ type: "message_start", message: { model: "claude-haiku-4-5-20251001", usage: { input_tokens: 10, output_tokens: 0 } } });
+  const cached = prompt.includes("CACHED");
+  ev({ type: "message_start", message: { model: "claude-haiku-4-5-20251001", usage: cached
+    ? { input_tokens: 3, cache_read_input_tokens: 100000, cache_creation_input_tokens: 5000, output_tokens: 0 }
+    : { input_tokens: 10, output_tokens: 0 } } });
   if (args.includes("--thinking-display")) {
     ev({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } });
     ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Erst das Tool, " } });
@@ -118,7 +121,9 @@ async function main() {
     results.push(r.result.content[0].text);
   }
 
-  ev({ type: "message_start", message: { model: "claude-haiku-4-5-20251001", usage: { input_tokens: 20, output_tokens: 0 } } });
+  ev({ type: "message_start", message: { model: "claude-haiku-4-5-20251001", usage: cached
+    ? { input_tokens: 4, cache_read_input_tokens: 105000, cache_creation_input_tokens: 8000, output_tokens: 0 }
+    : { input_tokens: 20, output_tokens: 0 } } });
   ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
   const final = "Ergebnis: " + results.join(" | ") + (imageTypes.length ? " [images:" + imageTypes.join(",") + "]" : "");
   ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: final } });
@@ -126,7 +131,9 @@ async function main() {
   ev({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } });
   ev({ type: "message_stop" });
   out({ type: "result", subtype: "success", is_error: false, result: final, num_turns: 2,
-        usage: { input_tokens: 30, output_tokens: 12 }, session_id: "s" });
+        usage: cached
+          ? { input_tokens: 7, cache_read_input_tokens: 205000, cache_creation_input_tokens: 13000, output_tokens: 12 }
+          : { input_tokens: 30, output_tokens: 12 }, session_id: "s" });
 }
 `;
 
@@ -203,7 +210,8 @@ function collect(chunks: any[]) {
     }
     if (ch.finish_reason) finish = ch.finish_reason;
   }
-  return { content, calls, finish };
+  const usage = [...chunks].reverse().find((c) => c.usage)?.usage;
+  return { content, calls, finish, usage };
 }
 
 describe("native client tools via MCP", { timeout: 30_000 }, () => {
@@ -293,6 +301,28 @@ describe("native client tools via MCP", { timeout: 30_000 }, () => {
     const r2 = await post({ model: "haiku", stream: true, messages, tools: TOOLS });
     const t2 = collect(await readChunks(r2));
     assert.equal(t2.content, "Ergebnis: Berlin sonnig | Koeln bewoelkt");
+  });
+
+  it("reports the full prompt incl. cache of the last call as prompt_tokens", async () => {
+    const messages: any[] = [{ role: "user", content: "CACHED Wetter in Berlin?" }];
+    const r1 = await post({ model: "haiku", stream: true, messages, tools: TOOLS });
+    const t1 = collect(await readChunks(r1));
+    assert.equal(t1.finish, "tool_calls");
+    // call 1: 3 uncached + 100k cache read + 5k cache creation
+    assert.equal(t1.usage.prompt_tokens, 105003);
+    assert.equal(t1.usage.cache_read_input_tokens, 100000);
+
+    messages.push(
+      { role: "assistant", content: t1.content, tool_calls: t1.calls.map((c) => ({
+        id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } })) },
+      { role: "tool", tool_call_id: "call_01AAA", content: "Berlin: 13 Grad" }
+    );
+    const r2 = await post({ model: "haiku", stream: true, messages, tools: TOOLS });
+    const t2 = collect(await readChunks(r2));
+    assert.equal(t2.finish, "stop");
+    // last call only (4 + 105k + 8k), NOT the run total of 218,007
+    assert.equal(t2.usage.prompt_tokens, 113004);
+    assert.equal(t2.usage.completion_tokens, 5);
   });
 
   it("works non-streaming (tool_calls message, then final answer)", async () => {

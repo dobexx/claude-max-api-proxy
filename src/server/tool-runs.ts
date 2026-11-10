@@ -27,7 +27,7 @@ import path from "path";
 import { ClaudeSubprocess, isAuthError } from "../subprocess/manager.js";
 import { MCP_CONFIG_PREFIX, tempPath, trackTemp, releaseTemp } from "../subprocess/temp-files.js";
 import { extractText, type CliInput } from "../adapter/openai-to-cli.js";
-import { normalizeModelName } from "../adapter/cli-to-openai.js";
+import { normalizeModelName, toOpenAIUsage } from "../adapter/cli-to-openai.js";
 import {
   getBridgeBaseUrl,
   registerEndpoint,
@@ -303,18 +303,8 @@ function toUsage(u?: {
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
 }): Usage | undefined {
-  if (!u) return undefined;
-  const input = u.input_tokens || 0;
-  const output = u.output_tokens || 0;
-  return {
-    prompt_tokens: input,
-    completion_tokens: output,
-    total_tokens: input + output,
-    ...(u.cache_read_input_tokens ? { cache_read_input_tokens: u.cache_read_input_tokens } : {}),
-    ...(u.cache_creation_input_tokens
-      ? { cache_creation_input_tokens: u.cache_creation_input_tokens }
-      : {}),
-  };
+  // Full prompt size incl. cached tokens - see toOpenAIUsage
+  return toOpenAIUsage(u);
 }
 
 /** Loose view of a stream_event - the typed union doesn't cover message_delta */
@@ -567,7 +557,9 @@ class ToolRun {
         if (!sink.emittedText && !sink.emittedToolCalls && result.result) {
           sink.text(result.result);
         }
-        sink.finish("stop", toUsage(result.usage));
+        // The result's usage is summed over every model call of the run;
+        // the last call's usage (from message_start/delta) is the real context
+        sink.finish("stop", this.turnUsage ?? toUsage(result.usage));
       }
     }
     if (this.sessionKey) {
