@@ -25,7 +25,7 @@ const dir = process.env.CLAUDE_CONFIG_DIR || "";
 const name = path.basename(dir);
 let mode = "ok";
 try { mode = fs.readFileSync(path.join(dir, "mode"), "utf8").trim(); } catch {}
-fs.appendFileSync(path.join(dir, "calls"), "x");
+if (dir) fs.appendFileSync(path.join(dir, "calls"), "x"); // flag probes run without a dir
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const ev = (event) => out({ type: "stream_event", event, session_id: "s", uuid: "u" });
 const args = process.argv.slice(2);
