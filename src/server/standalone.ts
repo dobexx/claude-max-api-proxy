@@ -14,6 +14,15 @@ import { verifyClaude, isExternalMcpAllowed, isClaudeMemoryEnabled } from "../su
 import { sweepStaleTempFiles } from "../subprocess/temp-files.js";
 import { initApiKey, initAdminKey } from "./auth.js";
 import { getSystemPromptMode, isOpenClawMappingEnabled } from "../adapter/system-prompt.js";
+import {
+  accountsEnabled,
+  getAccounts,
+  hasCredentials as accountLoggedIn,
+  switchThreshold,
+  stickyMs,
+  saveBindings,
+} from "../accounts/pool.js";
+import { startUsagePolling, stopUsagePolling } from "../accounts/usage.js";
 
 /**
  * Minimal .env loader: only sets variables that are not already present in
@@ -100,6 +109,15 @@ async function main(): Promise<void> {
   // Check for credentials. The CLI can also store them in the OS keychain,
   // which we can't inspect - so a missing config dir is a warning, not fatal.
   console.log("Checking authentication...");
+  if (accountsEnabled()) {
+    for (const a of getAccounts()) {
+      console.log(`  Account ${a.name}: ${accountLoggedIn(a) ? "logged in" : "NOT LOGGED IN"} (${a.configDir})`);
+    }
+    if (getAccounts().some((a) => !accountLoggedIn(a))) {
+      console.log("  Log in missing accounts: POST /admin/relogin/start?account=<name>");
+    }
+    console.log("");
+  }
   const home = process.env.HOME || "";
   const configDir = process.env.CLAUDE_CONFIG_DIR || (home ? `${home}/.claude` : "");
   let hasCredentials = false;
@@ -111,7 +129,9 @@ async function main(): Promise<void> {
   } catch {
     hasCredentials = false;
   }
-  if (hasCredentials) {
+  if (accountsEnabled()) {
+    // per-account status printed above
+  } else if (hasCredentials) {
     console.log("  Credentials: found\n");
   } else {
     console.log("  Credentials: NOT FOUND");
@@ -138,6 +158,14 @@ async function main(): Promise<void> {
         : "[Memory] Claude Code auto-memory: off"
     );
     console.log(`[HTTP] Max request body: ${getBodyLimit()}`);
+    if (accountsEnabled()) {
+      console.log(
+        `[Accounts] ${getAccounts().map((a) => a.name).join(", ")} | switch at ${Math.round(
+          switchThreshold() * 100
+        )} % | chats stay on their account for ${Math.round(stickyMs() / 60_000)} min (prompt cache)`
+      );
+      startUsagePolling();
+    }
     const swept = sweepStaleTempFiles();
     if (swept > 0) {
       console.log(`[Temp] Removed ${swept} stale temp file(s) of earlier proxy runs`);
@@ -159,6 +187,8 @@ async function main(): Promise<void> {
   // Handle graceful shutdown
   const shutdown = async () => {
     console.log("\nShutting down...");
+    stopUsagePolling();
+    if (accountsEnabled()) saveBindings();
     await stopServer();
     process.exit(0);
   };

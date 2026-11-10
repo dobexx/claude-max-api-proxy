@@ -15,6 +15,8 @@ SCHEDULE="${KEEPALIVE_CRON-0 6 * * 1}"
 if [ -n "$SCHEDULE" ] && [ -w /etc/cron.d ]; then
   {
     echo "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-/data/.claude}"
+    [ -n "$ACCOUNTS" ] && echo "ACCOUNTS=$ACCOUNTS"
+    [ -n "$ACCOUNTS_DIR" ] && echo "ACCOUNTS_DIR=$ACCOUNTS_DIR"
     echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     echo "$SCHEDULE proxyapp /app/scripts/keepalive.sh >> /proc/1/fd/2 2>&1"
   } > /etc/cron.d/keepalive

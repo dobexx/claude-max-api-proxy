@@ -25,6 +25,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { ClaudeSubprocess, isAuthError } from "../subprocess/manager.js";
+import { RoutedSubprocess } from "../accounts/routed.js";
 import { MCP_CONFIG_PREFIX, tempPath, trackTemp, releaseTemp } from "../subprocess/temp-files.js";
 import { extractText, type CliInput } from "../adapter/openai-to-cli.js";
 import { normalizeModelName, toOpenAIUsage } from "../adapter/cli-to-openai.js";
@@ -352,13 +353,15 @@ interface ToolRunOptions {
   sessionKey: string | undefined;
   resume: boolean;
   messageCount: number;
+  /** Chat fingerprint for account affinity (multi-account mode) */
+  chatKey?: string;
 }
 
 class ToolRun {
   readonly runId = randomBytes(12).toString("hex");
   readonly sessionKey: string | undefined;
   private readonly token = randomBytes(32).toString("hex");
-  private readonly subprocess = new ClaudeSubprocess();
+  private readonly subprocess: RoutedSubprocess;
   private state: "active" | "parked" | "done" = "active";
   private sink: TurnSink | null = null;
   private configPath = "";
@@ -383,6 +386,7 @@ class ToolRun {
   constructor(private opts: ToolRunOptions) {
     this.sessionKey = opts.sessionKey;
     this.messageCount = opts.messageCount;
+    this.subprocess = new RoutedSubprocess(opts.chatKey);
     const { specs, reverse } = buildToolSpecs(opts.tools);
     this.specs = specs;
     this.reverseNames = reverse;
@@ -745,6 +749,7 @@ export async function startToolRun(opts: {
   sessionKey: string | undefined;
   resume: boolean;
   messageCount: number;
+  chatKey?: string;
 }): Promise<void> {
   const run = new ToolRun(opts);
   const model = () => run.currentModel;

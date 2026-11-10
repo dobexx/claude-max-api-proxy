@@ -7,7 +7,9 @@
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { existsSync, readdirSync } from "fs";
-import { ClaudeSubprocess, isAuthError } from "../subprocess/manager.js";
+import { isAuthError } from "../subprocess/manager.js";
+import { RoutedSubprocess } from "../accounts/routed.js";
+import { accountsEnabled, hasAnyCredentials, chatFingerprint } from "../accounts/pool.js";
 import { openaiToCli, openaiToCliDelta } from "../adapter/openai-to-cli.js";
 import {
   cliResultToOpenai,
@@ -32,6 +34,7 @@ import {
  * CLI's onboarding/login failure - we can answer that upfront instead.
  */
 function hasClaudeCredentials(): boolean {
+  if (accountsEnabled()) return hasAnyCredentials();
   const dir = process.env.CLAUDE_CONFIG_DIR || `${process.env.HOME}/.claude`;
   try {
     if (!existsSync(dir)) return false;
@@ -210,6 +213,7 @@ export async function handleChatCompletions(
           sessionKey: tooled.sessionKey,
           resume: tooled.resume,
           messageCount: body.messages.length,
+          chatKey: chatFingerprint(body.messages, body.user),
         });
         return;
       }
@@ -217,7 +221,7 @@ export async function handleChatCompletions(
 
     // Convert to CLI input format, resuming a persisted session when we have one
     const { cliInput, sessionKey, resume } = resolveCliInput(body);
-    const subprocess = new ClaudeSubprocess();
+    const subprocess = new RoutedSubprocess(chatFingerprint(body.messages, body.user));
     const sessionCtx: SessionContext = { sessionKey, resume, messageCount: body.messages.length };
 
     // Attached images (OpenAI image_url blocks) travel with cliInput.images
@@ -261,7 +265,7 @@ function toOpenAICallId(claudeId: string): string {
 async function handleStreamingResponse(
   req: Request,
   res: Response,
-  subprocess: ClaudeSubprocess,
+  subprocess: RoutedSubprocess,
   cliInput: ReturnType<typeof openaiToCli>,
   requestId: string,
   sessionCtx: SessionContext
@@ -547,6 +551,19 @@ async function handleStreamingResponse(
         isFirst = false;
       }
       if (!res.writableEnded) {
+        // Errors (e.g. "You've hit your weekly limit") arrive only in the
+        // result, never as stream deltas - show them instead of an empty reply
+        if (result.is_error && !hasEmittedText && !accumulatedText && result.result) {
+          const errText = {
+            id: `chatcmpl-${requestId}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: lastModel,
+            choices: [{ index: 0, delta: { role: "assistant", content: result.result }, finish_reason: null }],
+          };
+          res.write(`data: ${JSON.stringify(errText)}\n\n`);
+          hasEmittedText = true;
+        }
         // Send final done chunk with finish_reason and usage data
         const doneChunk = createDoneChunk(requestId, lastModel);
         const usage = lastCall.usage(result.usage);
@@ -625,7 +642,16 @@ async function handleStreamingResponse(
       systemPromptMode: cliInput.systemPromptMode,
     }).catch((err) => {
       console.error("[Streaming] Subprocess start error:", err);
-      reject(err);
+      if (!res.writableEnded) {
+        res.write(
+          `data: ${JSON.stringify({
+            error: { message: err instanceof Error ? err.message : String(err), type: "server_error", code: null },
+          })}\n\n`
+        );
+        res.write("data: [DONE]\n\n");
+        res.end();
+      }
+      resolve();
     });
   });
 }
@@ -635,7 +661,7 @@ async function handleStreamingResponse(
  */
 async function handleNonStreamingResponse(
   res: Response,
-  subprocess: ClaudeSubprocess,
+  subprocess: RoutedSubprocess,
   cliInput: ReturnType<typeof openaiToCli>,
   requestId: string,
   sessionCtx: SessionContext

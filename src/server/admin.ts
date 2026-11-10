@@ -17,13 +17,29 @@
  * PROXY_API_KEY).
  */
 
-import { Router } from "express";
-import { spawn, execFile, ChildProcess } from "child_process";
+import { Router, type Request } from "express";
+import { spawn, ChildProcess } from "child_process";
+import { mkdirSync } from "fs";
+import { buildCliEnv } from "../subprocess/manager.js";
+import {
+  accountsEnabled,
+  getAccounts,
+  getAccount,
+  defaultAccount,
+  hasCredentials,
+  activeChatCount,
+  switchThreshold,
+  markHealthy,
+  type AccountState,
+} from "../accounts/pool.js";
+import { queryUsage, refreshAccount, parseUsage as parseUsageText } from "../accounts/usage.js";
 
 type ReloginState = "idle" | "awaiting_code" | "success" | "failed";
 
 interface ReloginSession {
   state: ReloginState;
+  /** Account being logged in (multi-account mode) */
+  account: string | null;
   url: string | null;
   detail: string | null;
   startedAt: number;
@@ -47,6 +63,22 @@ function isExpired(s: ReloginSession): boolean {
 }
 
 /**
+ * Account addressed by ?account=<name> or {"account": "<name>"}. Without
+ * ACCOUNTS: null (classic single login). With ACCOUNTS: defaults to the first
+ * account; an unknown name is an error (returned as string).
+ */
+function resolveAccount(req: Request): AccountState | null | string {
+  if (!accountsEnabled()) return null;
+  const name = String((req.query.account as string) || req.body?.account || "").trim();
+  if (!name) return defaultAccount() ?? null;
+  return getAccount(name) ?? `Unknown account "${name}" (configured: ${getAccounts().map((a) => a.name).join(", ")})`;
+}
+
+function unknownAccount(res: import("express").Response, message: string): void {
+  res.status(404).json({ error: { message, type: "invalid_request_error", code: "unknown_account" } });
+}
+
+/**
  * Try to extract the OAuth authorize URL from CLI output.
  * The CLI prints something like "Open this URL: https://claude.ai/oauth/authorize?..."
  */
@@ -63,7 +95,27 @@ export function createAdminRouter(): Router {
    * Starts `claude auth login` in the container and returns
    * the URL the admin must open in a browser.
    */
-  router.post("/relogin/start", (_req, res) => {
+  router.post("/relogin/start", (req, res) => {
+    const account = resolveAccount(req);
+    if (typeof account === "string") {
+      unknownAccount(res, account);
+      return;
+    }
+    if (
+      session &&
+      !isExpired(session) &&
+      session.state === "awaiting_code" &&
+      session.account !== (account?.name ?? null)
+    ) {
+      res.status(409).json({
+        error: {
+          message: `A login for account "${session.account}" is in progress - complete or cancel it first.`,
+          type: "invalid_request_error",
+          code: "flow_in_progress",
+        },
+      });
+      return;
+    }
     if (session && !isExpired(session) && session.state === "awaiting_code") {
       // A flow is already waiting - return its URL again (idempotent for retries)
       res.json({ state: session.state, url: session.url, note: "Flow already in progress" });
@@ -73,8 +125,10 @@ export function createAdminRouter(): Router {
 
     let proc: ChildProcess;
     try {
-      proc = spawn("claude", ["auth", "login"], {
+      if (account) mkdirSync(account.configDir, { recursive: true, mode: 0o700 });
+      proc = spawn(process.env.CLAUDE_BIN || "claude", ["auth", "login"], {
         stdio: ["pipe", "pipe", "pipe"],
+        env: buildCliEnv(account?.configDir),
       });
     } catch (err) {
       res.status(500).json({
@@ -85,6 +139,7 @@ export function createAdminRouter(): Router {
 
     session = {
       state: "awaiting_code",
+      account: account?.name ?? null,
       url: null,
       detail: null,
       startedAt: Date.now(),
@@ -98,7 +153,7 @@ export function createAdminRouter(): Router {
       if (!session.url) {
         session.url = extractUrl(session.buffer);
         if (session.url) {
-          console.log("[Admin] Relogin URL ready");
+          console.log(`[Admin] Relogin URL ready${session.account ? ` (account ${session.account})` : ""}`);
         }
       }
     };
@@ -126,6 +181,7 @@ export function createAdminRouter(): Router {
         if (session.url) {
           res.json({
             state: session.state,
+            ...(session.account ? { account: session.account } : {}),
             url: session.url,
             instructions:
               "Open the URL in a browser, authorize, then POST the returned code to /admin/relogin/complete",
@@ -192,9 +248,18 @@ export function createAdminRouter(): Router {
         ? "Login successful - credentials written to the persistent volume."
         : `Login failed (exit code ${exitCode}). Output: ${current.buffer.slice(-500)}`;
       current.proc = null;
-      console.log(`[Admin] Relogin completed: ${current.state}`);
+      console.log(`[Admin] Relogin completed: ${current.state}${current.account ? ` (account ${current.account})` : ""}`);
+      const acc = getAccount(current.account ?? undefined);
+      if (acc && exitCode === 0) {
+        markHealthy(acc);
+        void refreshAccount(acc);
+      }
       if (!res.headersSent) {
-        res.status(exitCode === 0 ? 200 : 502).json({ state: current.state, detail: current.detail });
+        res.status(exitCode === 0 ? 200 : 502).json({
+          state: current.state,
+          ...(current.account ? { account: current.account } : {}),
+          detail: current.detail,
+        });
       }
       // Clean up the session after responding - on success the CLI output may
       // contain account details we don't want to keep in memory
@@ -218,6 +283,7 @@ export function createAdminRouter(): Router {
     }
     res.json({
       state: session.state,
+      ...(session.account ? { account: session.account } : {}),
       url: session.url,
       detail: session.detail,
       expiresIn: Math.max(0, SESSION_TIMEOUT_MS - (Date.now() - session.startedAt)),
@@ -233,68 +299,76 @@ export function createAdminRouter(): Router {
   });
 
   /**
-   * GET /admin/usage
+   * GET /admin/usage[?account=<name>]
    * Subscription usage as reported by the CLI itself ("claude --print /usage").
    * Answers directly from the CLI, costs no API tokens. Cached for 60s.
    */
-  router.get("/usage", (_req, res) => {
-    const now = Date.now();
-    if (usageCache && now - usageCache.at < 60_000) {
-      res.json({ ...usageCache.data, cached: true });
+  router.get("/usage", (req, res) => {
+    const account = resolveAccount(req);
+    if (typeof account === "string") {
+      unknownAccount(res, account);
       return;
     }
+    const key = account?.name ?? "";
+    const now = Date.now();
+    const cached = usageCache.get(key);
+    if (cached && now - cached.at < 60_000) {
+      res.json({ ...cached.data, cached: true });
+      return;
+    }
+    const target: AccountState =
+      account ?? ({ name: "", configDir: process.env.CLAUDE_CONFIG_DIR || "" } as AccountState);
+    queryUsage(target)
+      .then((data) => {
+        const out = account ? { account: account.name, ...data } : data;
+        usageCache.set(key, { at: Date.now(), data: out });
+        res.json({ ...out, cached: false });
+      })
+      .catch((err: Error) => {
+        res.status(502).json({
+          error: { message: `Usage query failed: ${err.message}`, type: "server_error", code: null },
+        });
+      });
+  });
 
-    execFile(
-      "claude",
-      ["--print", "/usage"],
-      { timeout: 20_000, maxBuffer: 64 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          res.status(502).json({
-            error: {
-              message: `Usage query failed: ${stderr?.toString().trim() || err.message}`,
-              type: "server_error",
-              code: null,
-            },
-          });
-          return;
-        }
-        const data = parseUsage(stdout.toString());
-        usageCache = { at: Date.now(), data };
-        res.json({ ...data, cached: false });
-      }
-    );
+  /**
+   * GET /admin/accounts
+   * All configured accounts with status, utilization and active chats.
+   * POST /admin/accounts/refresh re-polls the utilization of all accounts.
+   */
+  router.get("/accounts", (_req, res) => {
+    if (!accountsEnabled()) {
+      res.json({ enabled: false, note: "Single-account mode - set ACCOUNTS to enable distribution" });
+      return;
+    }
+    res.json({
+      enabled: true,
+      switch_at_percent: Math.round(switchThreshold() * 100),
+      accounts: getAccounts().map((a) => ({
+        name: a.name,
+        config_dir: a.configDir,
+        logged_in: hasCredentials(a),
+        status: a.status,
+        percent_used: a.utilization === null ? null : Math.round(a.utilization * 100),
+        resets_at: a.resetsAt ? new Date(a.resetsAt).toISOString() : null,
+        limited_until: a.limitedUntil ? new Date(a.limitedUntil).toISOString() : null,
+        active_chats: activeChatCount(a.name),
+        updated_at: a.updatedAt ? new Date(a.updatedAt).toISOString() : null,
+        ...(a.detail ? { detail: a.detail } : {}),
+      })),
+    });
+  });
+
+  router.post("/accounts/refresh", async (_req, res) => {
+    await Promise.all(getAccounts().map((a) => refreshAccount(a)));
+    usageCache.clear();
+    res.redirect(303, "/admin/accounts");
   });
 
   return router;
 }
 
-let usageCache: { at: number; data: Record<string, unknown> } | null = null;
+const usageCache = new Map<string, { at: number; data: Record<string, unknown> }>();
 
-/**
- * Parse the plain-text output of "claude --print /usage" into structured data.
- * Format (CLI 2.1.x), lines like:
- *   Current session: 3% used · resets Aug 16, 5:50pm (UTC)
- *   Current week (all models): 7% used · resets Aug 19, 9am (UTC)
- */
-function parseUsage(text: string): Record<string, unknown> {
-  const result: Record<string, unknown> = { raw: text.trim() };
-  const lineRe =
-    /^(Current session|Current week(?: \(([^)]+)\))?)\s*:\s*(\d+)% used(?:\s*·\s*resets (.+))?$/i;
-
-  for (const line of text.split("\n")) {
-    const m = line.trim().match(lineRe);
-    if (!m) continue;
-    const scope = m[2] ? m[2].toLowerCase().replace(/\s+/g, "_") : null;
-    const key = m[1].toLowerCase().startsWith("current session")
-      ? "session"
-      : scope
-        ? `week_${scope}`
-        : "week_all_models";
-    result[key] = {
-      percent_used: Number(m[3]),
-      ...(m[4] ? { resets: m[4].trim() } : {}),
-    };
-  }
-  return result;
-}
+/** Kept for compatibility - the parser lives in accounts/usage.ts */
+export const parseUsage = parseUsageText;

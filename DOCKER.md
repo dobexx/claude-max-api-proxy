@@ -150,6 +150,39 @@ curl https://deine-domain/admin/relogin/status \
 
 Der Flow läuft nach 10 Minuten ab (Sicherheits-Timeout). Die Admin-Endpunkte verlangen `PROXY_ADMIN_KEY` – ist der nicht gesetzt, gilt `PROXY_API_KEY`. **Empfehlung:** einen separaten, stärkeren Admin-Key setzen, damit normale API-Nutzer keinen Relogin auslösen können.
 
+## Mehrere Accounts (Verteilung)
+
+Mehrere Claude-Abos hinter einem Proxy. Jeder Account hat ein eigenes CLI-Konfigurationsverzeichnis mit eigenem Login; der Proxy wählt pro Anfrage, welches die CLI bekommt (`CLAUDE_CONFIG_DIR`). Kein Kopieren von Tokens, kein Neustart.
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `ACCOUNTS` | – (aus) | z. B. `loupz=/data/.claude,jungherz` – Name oder `name=verzeichnis`; ohne Verzeichnis `$ACCOUNTS_DIR/<name>` |
+| `ACCOUNTS_DIR` | `/data/accounts` | Basisverzeichnis, enthält auch `affinity.json` (Chat-Zuordnung, nur Hashes) |
+| `ACCOUNT_SWITCH_AT` | `85` | Prozent Auslastung, ab der aktive Chats umziehen |
+| `ACCOUNT_STICKY_MINUTES` | `60` | So lange bleibt ein Chat auf seinem Account (Lebensdauer des Prompt-Caches) |
+| `ACCOUNT_POLL_MINUTES` | `10` | Abfrage der Auslastung per `claude /usage` (kostet keine Tokens), `0` = aus |
+
+**Verteilung:**
+- Ein Chat wird über einen Fingerabdruck seiner ersten Nachricht wiedererkannt (oder über `user`, falls der Client es sendet).
+- **Neue Chats** und Chats mit **kaltem Cache** (länger als `ACCOUNT_STICKY_MINUTES` ohne Nachricht) gehen an den Account mit der geringsten Auslastung (maßgeblich: Woche bzw. Sitzung, nicht modellspezifische Fenster).
+- **Aktive Chats** bleiben auf ihrem Account, damit der Prompt-Cache warm bleibt – außer der Account erreicht `ACCOUNT_SWITCH_AT` und ein anderer liegt darunter.
+- **Limit erreicht, nur noch bezahlte Zusatznutzung oder Login abgelaufen:** Die Anfrage läuft automatisch auf dem nächsten Account, solange das Modell noch nichts geantwortet hat. Der Account wird bis zum Reset übersprungen.
+- Sind alle Accounts am Limit, antwortet der, dessen Reset am nächsten liegt (mit der Limit-Meldung der CLI).
+
+**Einrichten:**
+```bash
+# 1. In EasyPanel: ACCOUNTS=loupz=/data/.claude,jungherz  (bestehender Login wird zu "loupz")
+# 2. Weiteren Account anmelden
+curl -X POST "https://deine-domain/admin/relogin/start?account=jungherz" -H "Authorization: Bearer <PROXY_ADMIN_KEY>"
+curl -X POST https://deine-domain/admin/relogin/complete -H "Authorization: Bearer <PROXY_ADMIN_KEY>" \
+  -H "Content-Type: application/json" -d '{"code": "..."}'
+# 3. Übersicht
+curl https://deine-domain/admin/accounts -H "Authorization: Bearer <PROXY_ADMIN_KEY>"
+curl "https://deine-domain/admin/usage?account=jungherz" -H "Authorization: Bearer <PROXY_ADMIN_KEY>"
+```
+
+Im Log steht jede Zuordnung, z. B. `[Accounts] chat 62b08c56 -> jungherz (new chat) | loupz 60 %, jungherz 30 %`. Der Keep-alive-Cron pingt alle Accounts.
+
 ### Mounts im Überblick
 
 | Pfad | Typ | Zweck |

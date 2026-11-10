@@ -57,6 +57,8 @@ export interface SubprocessOptions {
   systemPrompt?: string;
   /** append: added to Claude Code's default system prompt; replace: replaces it */
   systemPromptMode?: "append" | "replace";
+  /** CLI config dir of the account serving this request (multi-account mode) */
+  configDir?: string;
 }
 
 /** Max size per image (decoded), 20 MB - generous but bounded */
@@ -405,11 +407,14 @@ export function isClaudeMemoryEnabled(): boolean {
   return ["on", "1", "true", "yes"].includes(raw);
 }
 
-/** Environment for the CLI subprocess */
-export function buildCliEnv(): NodeJS.ProcessEnv {
+/** Environment for the CLI subprocess (configDir: account-specific CLAUDE_CONFIG_DIR) */
+export function buildCliEnv(configDir?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(process.env).filter(([k]) => k !== "CLAUDECODE")
   );
+  if (configDir) {
+    env.CLAUDE_CONFIG_DIR = configDir;
+  }
   if (!isExternalMcpAllowed()) {
     env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
   }
@@ -491,7 +496,7 @@ export class ClaudeSubprocess extends EventEmitter {
         const { bin, shell } = resolveClaudeBin();
         this.process = spawn(bin, args, {
           cwd: options.cwd || process.cwd(),
-          env: buildCliEnv(),
+          env: buildCliEnv(options.configDir),
           stdio: ["pipe", "pipe", "pipe"],
           shell,
         });
