@@ -20,7 +20,7 @@ import {
 import { getSession, setSession, clearSession } from "../subprocess/session-store.js";
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
-import { AUTH_ERROR, cliErrorInfo, errorBody, logCliError, sendError, sseError } from "./errors.js";
+import { AUTH_ERROR, UPSTREAM_ERROR, cliErrorInfo, errorBody, logCliError, sendError, sseError } from "./errors.js";
 import {
   getToolMode,
   continueToolRun,
@@ -531,6 +531,12 @@ async function handleStreamingResponse(
       if (sessionCtx.resume && sessionCtx.sessionKey) {
         clearSession(sessionCtx.sessionKey);
       }
+      if (subprocess.hasUpstreamBlock()) {
+        logCliError("Streaming", UPSTREAM_ERROR);
+        sendError(res, UPSTREAM_ERROR, true);
+        resolve();
+        return;
+      }
       if (subprocess.hasAuthError()) {
         console.error("[Auth] Claude CLI authentication expired - user notified in chat");
         sendError(res, AUTH_ERROR, true);
@@ -549,9 +555,11 @@ async function handleStreamingResponse(
         }
         if (!res.writableEnded) {
           // Abnormal exit without result - send error
-          const info = subprocess.hasAuthError()
-            ? AUTH_ERROR
-            : { status: 500, body: errorBody(`Claude CLI exited with code ${code} without a response`, "server_error", null) };
+          const info = subprocess.hasUpstreamBlock()
+            ? UPSTREAM_ERROR
+            : subprocess.hasAuthError()
+              ? AUTH_ERROR
+              : { status: 500, body: errorBody(`Claude CLI exited with code ${code} without a response`, "server_error", null) };
           res.write(`data: ${JSON.stringify(info.body)}\n\n`);
         }
       }
@@ -623,6 +631,12 @@ async function handleNonStreamingResponse(
       if (sessionCtx.resume && sessionCtx.sessionKey) {
         clearSession(sessionCtx.sessionKey);
       }
+      if (subprocess.hasUpstreamBlock()) {
+        logCliError("NonStreaming", UPSTREAM_ERROR);
+        sendError(res, UPSTREAM_ERROR, false);
+        resolve();
+        return;
+      }
       if (subprocess.hasAuthError()) {
         console.error("[Auth] Claude CLI authentication expired - user notified in chat");
         sendError(res, AUTH_ERROR, false);
@@ -692,7 +706,10 @@ async function handleNonStreamingResponse(
           clearSession(sessionCtx.sessionKey);
         }
         if (!res.headersSent) {
-          if (subprocess.hasAuthError()) {
+          if (subprocess.hasUpstreamBlock()) {
+            logCliError("NonStreaming", UPSTREAM_ERROR);
+            sendError(res, UPSTREAM_ERROR, false);
+          } else if (subprocess.hasAuthError()) {
             console.error("[Auth] Claude CLI authentication expired - user notified in chat");
             sendError(res, AUTH_ERROR, false);
           } else {

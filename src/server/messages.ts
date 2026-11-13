@@ -18,3 +18,12 @@ export const AUTH_EXPIRED_MESSAGE = [
   "",
   "Details: siehe DOCKER.md, Abschnitt 'Re-Login ohne Container-Zugriff'.",
 ].join("\n");
+
+/**
+ * Anthropic/Cloudflare rejected the request (outage at Anthropic). The login
+ * is fine - no relogin needed, a retry in a minute or two usually works.
+ */
+export const UPSTREAM_BLOCKED_MESSAGE =
+  "Anthropic hat die Anfrage abgewiesen (Cloudflare-Sperre, HTTP 403) - vermutlich eine Stoerung " +
+  "bei Anthropic, die Anmeldung ist in Ordnung. Bitte in ein, zwei Minuten erneut versuchen. " +
+  "Status: https://status.claude.com";

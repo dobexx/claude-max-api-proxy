@@ -15,8 +15,9 @@
  */
 
 import type { Response } from "express";
-import { AUTH_EXPIRED_MESSAGE } from "./messages.js";
+import { AUTH_EXPIRED_MESSAGE, UPSTREAM_BLOCKED_MESSAGE } from "./messages.js";
 import { isLimitText } from "../accounts/pool.js";
+import { isUpstreamBlock } from "../subprocess/manager.js";
 
 export interface OpenAIErrorBody {
   error: { message: string; type: string; code: string | null };
@@ -43,6 +44,12 @@ export function errorBody(message: string, type: string, code: string | null): O
   return { error: { message, type, code } };
 }
 
+/** Anthropic/Cloudflare rejected the request (outage) - the login is fine */
+export const UPSTREAM_ERROR: CliErrorInfo = {
+  status: 503,
+  body: errorBody(UPSTREAM_BLOCKED_MESSAGE, "api_error", "upstream_blocked"),
+};
+
 /** Expired / missing login: relogin guidance as the error message */
 export const AUTH_ERROR: CliErrorInfo = {
   status: 401,
@@ -59,6 +66,13 @@ export function cliErrorInfo(result: CliErrorResult | null | undefined): CliErro
     (result.result || "").trim() || `Claude CLI reported an error (${result.subtype || "unknown"})`;
   const api = typeof result.api_error_status === "number" ? result.api_error_status : null;
 
+  // Outage page from Anthropic/Cloudflare: transient, the login is fine
+  if (isUpstreamBlock(message)) {
+    return {
+      status: 503,
+      body: errorBody(`${UPSTREAM_BLOCKED_MESSAGE} (CLI: ${message.slice(0, 160)})`, "api_error", "upstream_blocked"),
+    };
+  }
   if (TOO_LONG_RE.test(message)) {
     return { status: 400, body: errorBody(message, "invalid_request_error", "context_length_exceeded") };
   }

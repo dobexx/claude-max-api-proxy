@@ -203,6 +203,18 @@ function cliSupportsThinkingDisplay(): boolean {
 }
 
 /**
+ * Anthropic (via Cloudflare) rejected the request with an HTML error page
+ * instead of an API answer, e.g. "Failed to authenticate. API Error: 403
+ * Attention Required! | Cloudflare" during an outage at Anthropic. The CLI
+ * words this like a login failure, but the login is fine - it is transient.
+ */
+const UPSTREAM_BLOCK_RE = /attention required|just a moment\.\.\.|cloudflare|<!doctype html|<html[\s>]/i;
+
+export function isUpstreamBlock(text: string): boolean {
+  return UPSTREAM_BLOCK_RE.test(text);
+}
+
+/**
  * Detect authentication/authorization failures from CLI stderr or exit codes.
  * The CLI surfaces expired OAuth tokens as 401/authentication_error text on
  * stderr (there is no structured error type in stream-json), so we match the
@@ -210,6 +222,8 @@ function cliSupportsThinkingDisplay(): boolean {
  */
 export function isAuthError(stderr: string, exitCode: number | null): boolean {
   if (exitCode === 401) return true;
+  // An outage page is no login problem (see isUpstreamBlock)
+  if (isUpstreamBlock(stderr)) return false;
   const text = stderr.toLowerCase();
   return (
     text.includes("authentication_error") ||
@@ -733,6 +747,11 @@ export class ClaudeSubprocess extends EventEmitter {
    */
   hasAuthError(): boolean {
     return isAuthError(this.stderrBuffer, this.exitCode);
+  }
+
+  /** True if stderr shows Anthropic/Cloudflare rejecting the request (outage) */
+  hasUpstreamBlock(): boolean {
+    return isUpstreamBlock(this.stderrBuffer);
   }
 
   /**

@@ -17,7 +17,7 @@
  */
 
 import { EventEmitter } from "events";
-import { ClaudeSubprocess, isAuthError, type SubprocessOptions } from "../subprocess/manager.js";
+import { ClaudeSubprocess, isAuthError, isUpstreamBlock, type SubprocessOptions } from "../subprocess/manager.js";
 import {
   accountsEnabled,
   pickAccount,
@@ -25,6 +25,7 @@ import {
   observeRateLimit,
   markLimited,
   markAuthFailed,
+  markBlocked,
   isLimitText,
   utilizationSummary,
   type AccountState,
@@ -105,12 +106,12 @@ export class RoutedSubprocess extends EventEmitter {
     }
     sub.on("error", (err: Error) => {
       if (this.inner !== sub) return;
-      if (!this.committed && this.retryAfterFailure(sub.hasAuthError(), err.message)) return;
+      if (!this.committed && this.retryAfterFailure(sub, err.message)) return;
       this.emit("error", err);
     });
     sub.on("close", (code: number | null) => {
       if (this.inner !== sub) return;
-      if (!this.committed && code !== 0 && this.retryAfterFailure(sub.hasAuthError(), `exit ${code}`)) return;
+      if (!this.committed && code !== 0 && this.retryAfterFailure(sub, `exit ${code}`)) return;
       this.release();
       this.emit("close", code);
     });
@@ -149,6 +150,12 @@ export class RoutedSubprocess extends EventEmitter {
       return false;
     }
     const a = this.account;
+    // Outage page (Cloudflare 403): the CLI calls it "Failed to authenticate",
+    // but the login is fine - skip the account briefly instead
+    if (a && r.is_error && isUpstreamBlock(text)) {
+      markBlocked(a, text);
+      return this.failoverTo("rejected by Anthropic/Cloudflare");
+    }
     if (a && isAuthError(text, null)) {
       markAuthFailed(a, text);
       return this.failoverTo("login invalid");
@@ -160,9 +167,14 @@ export class RoutedSubprocess extends EventEmitter {
     return false;
   }
 
-  private retryAfterFailure(authFailed: boolean, detail: string): boolean {
+  private retryAfterFailure(sub: ClaudeSubprocess, detail: string): boolean {
     const a = this.account;
-    if (!a || !authFailed) return false;
+    if (!a) return false;
+    if (sub.hasUpstreamBlock()) {
+      markBlocked(a, detail);
+      return this.failoverTo("rejected by Anthropic/Cloudflare");
+    }
+    if (!sub.hasAuthError()) return false;
     markAuthFailed(a, detail);
     return this.failoverTo("login invalid");
   }
@@ -215,6 +227,10 @@ export class RoutedSubprocess extends EventEmitter {
 
   hasAuthError(): boolean {
     return this.inner?.hasAuthError() ?? false;
+  }
+
+  hasUpstreamBlock(): boolean {
+    return this.inner?.hasUpstreamBlock() ?? false;
   }
 
   isRunning(): boolean {

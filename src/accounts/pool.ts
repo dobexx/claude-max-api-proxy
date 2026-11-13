@@ -26,7 +26,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "
 import path from "path";
 import type { OpenAIChatMessage } from "../types/openai.js";
 
-export type AccountStatus = "ok" | "limited" | "auth_failed";
+/**
+ * ok          - usable
+ * limited     - subscription limit reached, skipped until limitedUntil
+ * blocked     - Anthropic/Cloudflare rejected requests (outage), skipped
+ *               for a short cool-down (limitedUntil), then tried again
+ * auth_failed - login invalid; re-checked every ACCOUNT_AUTH_RECHECK_SECONDS
+ */
+export type AccountStatus = "ok" | "limited" | "blocked" | "auth_failed";
 
 export interface AccountState {
   name: string;
@@ -36,7 +43,7 @@ export interface AccountState {
   /** Unix ms of the next reset of that window */
   resetsAt: number | null;
   status: AccountStatus;
-  /** Unix ms until which a limited account is skipped */
+  /** Unix ms until which a limited or blocked account is skipped */
   limitedUntil: number | null;
   detail: string | null;
   /** Unix ms of the last utilization update */
@@ -86,6 +93,16 @@ export function switchThreshold(): number {
 
 export function stickyMs(): number {
   return envNumber("ACCOUNT_STICKY_MINUTES", 60, 1, 24 * 60) * 60_000;
+}
+
+/** Cool-down after an outage block (Cloudflare 403) before an account is tried again */
+export function blockCooldownMs(): number {
+  return envNumber("ACCOUNT_BLOCK_SECONDS", 60, 5, 3600) * 1000;
+}
+
+/** How often an account with a failed login is checked again (0 = only on the regular poll) */
+export function authRecheckMs(): number {
+  return envNumber("ACCOUNT_AUTH_RECHECK_SECONDS", 60, 0, 3600) * 1000;
 }
 
 function parseAccounts(): AccountState[] {
@@ -185,11 +202,31 @@ export function markLimited(a: AccountState, untilMs: number | null, reason: str
   }
 }
 
+/**
+ * Anthropic/Cloudflare rejected this account's requests (outage page instead
+ * of an API answer). Not a login problem: the account is skipped for a short
+ * cool-down and then used again - no relogin, no manual refresh.
+ */
+export function markBlocked(a: AccountState, detail: string): void {
+  // A real login problem or limit is more specific - keep it
+  if (a.status === "auth_failed" || a.status === "limited") return;
+  const until = Date.now() + blockCooldownMs();
+  if (a.status !== "blocked") {
+    console.error(
+      `[Accounts] ${a.name}: rejected by Anthropic/Cloudflare (outage?) - skipped until ${new Date(until).toISOString()}`
+    );
+  }
+  a.status = "blocked";
+  a.limitedUntil = until;
+  a.detail = detail.slice(0, 300);
+}
+
 export function markAuthFailed(a: AccountState, detail: string): void {
   if (a.status !== "auth_failed") {
     console.error(`[Accounts] ${a.name}: login invalid - relogin via /admin/relogin/start?account=${a.name}`);
   }
   a.status = "auth_failed";
+  a.limitedUntil = null;
   a.detail = detail.slice(0, 300);
 }
 
@@ -238,8 +275,8 @@ export function observeRateLimit(a: AccountState, info: unknown): boolean {
     markLimited(a, until, rejected ? `rate limit "${status}"` : "only paid extra usage left");
     return true;
   }
-  // A request got through: the login works
-  if (a.status === "auth_failed") markHealthy(a);
+  // A request got through: the login works and Anthropic answers again
+  if (a.status === "auth_failed" || a.status === "blocked") markHealthy(a);
   return false;
 }
 
@@ -258,6 +295,12 @@ function isUsable(a: AccountState, now: number): boolean {
     markHealthy(a);
     a.utilization = null; // unknown after the reset - refreshed by the next event/poll
     onRecovered?.(a);
+  } else if (a.status === "blocked" && a.limitedUntil !== null && a.limitedUntil <= now) {
+    // Cool-down over: simply try again (utilization is still valid)
+    console.log(`[Accounts] ${a.name}: cool-down after Anthropic/Cloudflare block over - trying again`);
+    a.status = "ok";
+    a.limitedUntil = null;
+    a.detail = null;
   }
   return a.status === "ok" && hasCredentials(a);
 }
@@ -289,14 +332,16 @@ export function pickAccount(key: string | undefined, exclude: ReadonlySet<string
   const now = Date.now();
   const candidates = list.filter((a) => !exclude.has(a.name) && isUsable(a, now));
   if (candidates.length === 0) {
-    // Every account is limited: behave like single-account mode and let the
-    // one that resets first answer (the CLI reports the limit itself) rather
-    // than refusing outright. Accounts with a broken login are never used.
-    const limited = list
-      .filter((a) => !exclude.has(a.name) && a.status === "limited" && hasCredentials(a))
+    // Every account is limited or blocked: behave like single-account mode
+    // and let the one that is free first answer (the CLI reports the limit or
+    // the outage itself) rather than refusing outright. Accounts with a
+    // broken login are never used.
+    const waiting = list
+      .filter((a) => !exclude.has(a.name) && (a.status === "limited" || a.status === "blocked") && hasCredentials(a))
       .sort((x, y) => (x.limitedUntil ?? 0) - (y.limitedUntil ?? 0));
-    if (limited.length === 0) return null;
-    return { account: limited[0], reason: "all accounts limited", changed: true, fallback: true };
+    if (waiting.length === 0) return null;
+    const reason = waiting[0].status === "blocked" ? "all accounts blocked" : "all accounts limited";
+    return { account: waiting[0], reason, changed: true, fallback: true };
   }
 
   const threshold = switchThreshold();

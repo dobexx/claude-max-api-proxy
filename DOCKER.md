@@ -161,12 +161,16 @@ Mehrere Claude-Abos hinter einem Proxy. Jeder Account hat ein eigenes CLI-Konfig
 | `ACCOUNT_SWITCH_AT` | `85` | Prozent Auslastung, ab der aktive Chats umziehen |
 | `ACCOUNT_STICKY_MINUTES` | `60` | So lange bleibt ein Chat auf seinem Account (Lebensdauer des Prompt-Caches) |
 | `ACCOUNT_POLL_MINUTES` | `10` | Abfrage der Auslastung per `claude /usage` (kostet keine Tokens), `0` = aus |
+| `ACCOUNT_BLOCK_SECONDS` | `60` | Pause für einen Account, wenn Anthropic/Cloudflare Anfragen abweist (Störung, HTML-Seite statt API-Antwort) |
+| `ACCOUNT_AUTH_RECHECK_SECONDS` | `60` | So oft wird ein Account mit ungültigem Login erneut geprüft (`/usage`, keine Tokens), `0` = nur beim regulären Poll |
 
 **Verteilung:**
 - Ein Chat wird über einen Fingerabdruck seiner ersten Nachricht wiedererkannt (oder über `user`, falls der Client es sendet).
 - **Neue Chats** und Chats mit **kaltem Cache** (länger als `ACCOUNT_STICKY_MINUTES` ohne Nachricht) gehen an den Account mit der geringsten Auslastung (maßgeblich: Woche bzw. Sitzung, nicht modellspezifische Fenster).
 - **Aktive Chats** bleiben auf ihrem Account, damit der Prompt-Cache warm bleibt – außer der Account erreicht `ACCOUNT_SWITCH_AT` und ein anderer liegt darunter.
 - **Limit erreicht, nur noch bezahlte Zusatznutzung oder Login abgelaufen:** Die Anfrage läuft automatisch auf dem nächsten Account, solange das Modell noch nichts geantwortet hat. Der Account wird bis zum Reset übersprungen.
+- **Störung bei Anthropic** (z. B. `Failed to authenticate. API Error: 403 Attention Required! | Cloudflare`): Das ist kein Login-Problem. Der Account pausiert nur `ACCOUNT_BLOCK_SECONDS` (Status `blocked`) und wird danach automatisch wieder versucht, die Anfrage läuft vorher auf dem nächsten Account. Trifft es alle Accounts, bekommt der Client HTTP 503 mit dem Hinweis auf die Störung statt der Relogin-Anleitung.
+- **Login ungültig** (Status `auth_failed`): Der Proxy prüft den Account jede Minute erneut und nimmt ihn von selbst wieder auf, sobald `/usage` wieder Zahlen liefert. Ein wirklich abgelaufener Login bleibt bis zur Neuanmeldung gesperrt.
 - Sind alle Accounts am Limit, antwortet der, dessen Reset am nächsten liegt (mit der Limit-Meldung der CLI).
 
 **Einrichten:**

@@ -44,7 +44,7 @@ import type {
   OpenAIToolDefinition,
 } from "../types/openai.js";
 import type { ClaudeCliMessage, ClaudeCliResult } from "../types/claude-cli.js";
-import { AUTH_ERROR, cliErrorInfo, errorBody, logCliError, sseError, type CliErrorInfo } from "./errors.js";
+import { AUTH_ERROR, UPSTREAM_ERROR, cliErrorInfo, errorBody, logCliError, sseError, type CliErrorInfo } from "./errors.js";
 
 export type ToolMode = "mcp" | "prompt";
 
@@ -593,7 +593,10 @@ class ToolRun {
       this.state = "done";
       const sink = this.sink;
       if (sink && !sink.finished) {
-        if (this.subprocess.hasAuthError()) sink.authExpired();
+        if (this.subprocess.hasUpstreamBlock()) {
+          logCliError(`ToolRun ${this.runId}`, UPSTREAM_ERROR);
+          sink.error(UPSTREAM_ERROR);
+        } else if (this.subprocess.hasAuthError()) sink.authExpired();
         else sink.fail(`Claude CLI exited with code ${code} without a result`);
       }
       if (this.sessionKey) clearSession(this.sessionKey);

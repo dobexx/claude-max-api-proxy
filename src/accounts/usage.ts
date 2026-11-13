@@ -11,11 +11,13 @@ import {
   hasCredentials,
   setUtilization,
   markAuthFailed,
+  markBlocked,
   markHealthy,
   setRecoveryHandler,
+  authRecheckMs,
   type AccountState,
 } from "./pool.js";
-import { buildCliEnv } from "../subprocess/manager.js";
+import { buildCliEnv, isUpstreamBlock } from "../subprocess/manager.js";
 
 export interface UsageWindow {
   percent_used: number;
@@ -94,11 +96,13 @@ export async function refreshAccount(a: AccountState): Promise<void> {
     const p = bindingPercent(data);
     if (p !== null) {
       setUtilization(a, p / 100);
-      if (a.status === "auth_failed") markHealthy(a);
+      // The usage numbers came from Anthropic: login works, no outage block
+      if (a.status === "auth_failed" || a.status === "blocked") markHealthy(a);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (AUTH_TEXT_RE.test(msg)) markAuthFailed(a, msg);
+    if (isUpstreamBlock(msg)) markBlocked(a, msg);
+    else if (AUTH_TEXT_RE.test(msg)) markAuthFailed(a, msg);
     // other failures (timeout, network): keep the last known numbers
   }
 }
@@ -108,13 +112,35 @@ export async function refreshAll(): Promise<void> {
 }
 
 let pollTimer: NodeJS.Timeout | null = null;
+let recheckTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Accounts marked "login invalid" are checked again every minute: a short
+ * outage at Anthropic may look like a login failure, and the account should
+ * come back on its own once it works again (a real expired login stays
+ * auth_failed until the relogin). Costs no tokens (/usage).
+ */
+export async function recheckFailedLogins(): Promise<void> {
+  const now = Date.now();
+  const due = getAccounts().filter(
+    (a) =>
+      hasCredentials(a) &&
+      (a.status === "auth_failed" || (a.status === "blocked" && (a.limitedUntil ?? 0) <= now))
+  );
+  await Promise.all(due.map((a) => refreshAccount(a)));
+}
 
 /** Start periodic polling (ACCOUNT_POLL_MINUTES, default 10, 0 = off) */
 export function startUsagePolling(): void {
-  if (pollTimer || getAccounts().length === 0) return;
+  if (pollTimer || recheckTimer || getAccounts().length === 0) return;
   setRecoveryHandler((a) => void refreshAccount(a));
   const minutes = parseFloat(process.env.ACCOUNT_POLL_MINUTES ?? "10");
   void refreshAll();
+  const recheck = authRecheckMs();
+  if (recheck > 0) {
+    recheckTimer = setInterval(() => void recheckFailedLogins(), Math.max(10_000, recheck));
+    recheckTimer.unref();
+  }
   if (!Number.isFinite(minutes) || minutes <= 0) return;
   pollTimer = setInterval(() => void refreshAll(), Math.max(1, minutes) * 60_000);
   pollTimer.unref();
@@ -122,5 +148,7 @@ export function startUsagePolling(): void {
 
 export function stopUsagePolling(): void {
   if (pollTimer) clearInterval(pollTimer);
+  if (recheckTimer) clearInterval(recheckTimer);
   pollTimer = null;
+  recheckTimer = null;
 }
