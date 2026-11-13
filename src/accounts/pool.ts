@@ -390,6 +390,42 @@ export function chatFingerprint(
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
+/**
+ * Background task of OpenWebUI (title, tags, follow-up suggestions, search
+ * queries, autocomplete, image prompt): a single user message that starts
+ * with "### Task:" and carries the chat inside <chat_history>. These are no
+ * chats of their own - they are answered normally but not bound to an
+ * account, not logged as "new chat" and not counted as active chats.
+ *
+ * Context compaction is deliberately NOT covered: it replays the full chat
+ * (same first message, same fingerprint), so it keeps its chat's account and
+ * prompt cache.
+ */
+export function isTaskRequest(messages: OpenAIChatMessage[] | undefined): boolean {
+  // A model's own system prompt may be prepended - only the rest counts
+  const rest = (messages || []).filter((m) => m.role !== "system");
+  if (rest.length !== 1 || rest[0].role !== "user") return false;
+  const c = rest[0].content as unknown;
+  let text = "";
+  if (typeof c === "string") text = c;
+  else if (Array.isArray(c)) {
+    text = c
+      .filter((b) => b && (b.type === "text" || b.type === "input_text"))
+      .map((b) => String(b.text ?? ""))
+      .join("\n");
+  }
+  return /^\s*### Task:/.test(text) && text.includes("<chat_history>");
+}
+
+/**
+ * Account affinity key for a request: undefined for OpenWebUI background
+ * tasks (see isTaskRequest), the chat fingerprint otherwise.
+ */
+export function affinityKey(messages: OpenAIChatMessage[] | undefined, user?: string): string | undefined {
+  if (isTaskRequest(messages)) return undefined;
+  return chatFingerprint(messages, user);
+}
+
 // ─── Persistence (survives deploys; hashes only, no chat content) ───
 
 function affinityFile(): string {

@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import { existsSync, readdirSync } from "fs";
 import { isAuthError } from "../subprocess/manager.js";
 import { RoutedSubprocess } from "../accounts/routed.js";
-import { accountsEnabled, hasAnyCredentials, chatFingerprint } from "../accounts/pool.js";
+import { accountsEnabled, hasAnyCredentials, affinityKey } from "../accounts/pool.js";
 import { openaiToCli, openaiToCliDelta } from "../adapter/openai-to-cli.js";
 import {
   cliResultToOpenai,
@@ -20,7 +20,7 @@ import {
 import { getSession, setSession, clearSession } from "../subprocess/session-store.js";
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
-import { AUTH_EXPIRED_MESSAGE } from "./messages.js";
+import { AUTH_ERROR, cliErrorInfo, errorBody, logCliError, sendError, sseError } from "./errors.js";
 import {
   getToolMode,
   continueToolRun,
@@ -71,24 +71,6 @@ function parseToolCall(text: string): { name: string; arguments: string } | null
 let toolCallSeq = 0;
 function nextToolCallId(): string {
   return `call_${Date.now().toString(36)}${(toolCallSeq++).toString(36)}`;
-}
-
-/** Build an OpenAI-style assistant message body (non-streaming) */
-function authExpiredResponse(requestId: string, model: string) {
-  return {
-    id: `chatcmpl-${requestId}`,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content: AUTH_EXPIRED_MESSAGE },
-        finish_reason: "stop",
-      },
-    ],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-  };
 }
 
 interface SessionContext {
@@ -162,28 +144,7 @@ export async function handleChatCompletions(
     // letting the request run into the CLI's onboarding failure
     if (!hasClaudeCredentials()) {
       console.error("[Auth] No Claude credentials found - prompting admin to run the relogin flow");
-      const guidance = authExpiredResponse(requestId, "claude-sonnet-4");
-      if (stream) {
-        res.setHeader("Content-Type", "text/event-stream");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-        res.flushHeaders();
-        const chunk = {
-          id: guidance.id,
-          object: "chat.completion.chunk",
-          created: guidance.created,
-          model: guidance.model,
-          choices: [
-            { index: 0, delta: { role: "assistant", content: guidance.choices[0].message.content }, finish_reason: null },
-            { index: 0, delta: {}, finish_reason: "stop" },
-          ],
-        };
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        res.write("data: [DONE]\n\n");
-        res.end();
-      } else {
-        res.json(guidance);
-      }
+      sendError(res, AUTH_ERROR, stream);
       return;
     }
 
@@ -213,7 +174,7 @@ export async function handleChatCompletions(
           sessionKey: tooled.sessionKey,
           resume: tooled.resume,
           messageCount: body.messages.length,
-          chatKey: chatFingerprint(body.messages, body.user),
+          chatKey: affinityKey(body.messages, body.user),
         });
         return;
       }
@@ -221,7 +182,7 @@ export async function handleChatCompletions(
 
     // Convert to CLI input format, resuming a persisted session when we have one
     const { cliInput, sessionKey, resume } = resolveCliInput(body);
-    const subprocess = new RoutedSubprocess(chatFingerprint(body.messages, body.user));
+    const subprocess = new RoutedSubprocess(affinityKey(body.messages, body.user));
     const sessionCtx: SessionContext = { sessionKey, resume, messageCount: body.messages.length };
 
     // Attached images (OpenAI image_url blocks) travel with cliInput.images
@@ -478,22 +439,23 @@ async function handleStreamingResponse(
 
     subprocess.on("result", (result: ClaudeCliResult) => {
       isComplete = true;
-      // Same stdout-based auth failure as in non-streaming mode: replace the
-      // raw error text with actionable relogin guidance.
+      // Same stdout-based auth failure as in non-streaming mode: a real
+      // error (shown in red) with actionable relogin guidance.
       if (!res.writableEnded && isAuthError(result.result || "", null)) {
-        const errChunk = {
-          id: `chatcmpl-${requestId}`,
-          object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
-          model: lastModel,
-          choices: [{
-            index: 0,
-            delta: { role: "assistant", content: AUTH_EXPIRED_MESSAGE },
-            finish_reason: "stop",
-          }],
-        };
-        res.write(`data: ${JSON.stringify(errChunk)}\n\n`);
-        res.write("data: [DONE]\n\n");
+        console.error("[Auth] Claude CLI authentication expired - user notified in chat");
+        res.write(sseError(AUTH_ERROR));
+        res.end();
+        resolve();
+        return;
+      }
+      // CLI failed before the model said anything ("Prompt is too long",
+      // limit, unknown model ...): answer with an error event instead of
+      // passing the error text off as the assistant's reply
+      const cliError = cliErrorInfo(result);
+      if (cliError && !hasEmittedText && !accumulatedText && !res.writableEnded) {
+        if (sessionCtx.sessionKey) clearSession(sessionCtx.sessionKey);
+        logCliError("Streaming", cliError);
+        res.write(sseError(cliError));
         res.end();
         resolve();
         return;
@@ -551,19 +513,6 @@ async function handleStreamingResponse(
         isFirst = false;
       }
       if (!res.writableEnded) {
-        // Errors (e.g. "You've hit your weekly limit") arrive only in the
-        // result, never as stream deltas - show them instead of an empty reply
-        if (result.is_error && !hasEmittedText && !accumulatedText && result.result) {
-          const errText = {
-            id: `chatcmpl-${requestId}`,
-            object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
-            model: lastModel,
-            choices: [{ index: 0, delta: { role: "assistant", content: result.result }, finish_reason: null }],
-          };
-          res.write(`data: ${JSON.stringify(errText)}\n\n`);
-          hasEmittedText = true;
-        }
         // Send final done chunk with finish_reason and usage data
         const doneChunk = createDoneChunk(requestId, lastModel);
         const usage = lastCall.usage(result.usage);
@@ -584,29 +533,11 @@ async function handleStreamingResponse(
       }
       if (subprocess.hasAuthError()) {
         console.error("[Auth] Claude CLI authentication expired - user notified in chat");
-        if (!res.writableEnded) {
-          const chunk = {
-            id: `chatcmpl-${requestId}`,
-            object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
-            model: lastModel,
-            choices: [{ index: 0, delta: { role: "assistant", content: AUTH_EXPIRED_MESSAGE }, finish_reason: null }],
-          };
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-          res.write("data: [DONE]\n\n");
-          res.end();
-        }
+        sendError(res, AUTH_ERROR, true);
         resolve();
         return;
       }
-      if (!res.writableEnded) {
-        res.write(
-          `data: ${JSON.stringify({
-            error: { message: error.message, type: "server_error", code: null },
-          })}\n\n`
-        );
-        res.end();
-      }
+      sendError(res, { status: 500, body: errorBody(error.message, "server_error", null) }, true);
       resolve();
     });
 
@@ -618,9 +549,10 @@ async function handleStreamingResponse(
         }
         if (!res.writableEnded) {
           // Abnormal exit without result - send error
-          res.write(`data: ${JSON.stringify({
-            error: { message: `Process exited with code ${code}`, type: "server_error", code: null },
-          })}\n\n`);
+          const info = subprocess.hasAuthError()
+            ? AUTH_ERROR
+            : { status: 500, body: errorBody(`Claude CLI exited with code ${code} without a response`, "server_error", null) };
+          res.write(`data: ${JSON.stringify(info.body)}\n\n`);
         }
       }
       if (!res.writableEnded) {
@@ -642,15 +574,9 @@ async function handleStreamingResponse(
       systemPromptMode: cliInput.systemPromptMode,
     }).catch((err) => {
       console.error("[Streaming] Subprocess start error:", err);
-      if (!res.writableEnded) {
-        res.write(
-          `data: ${JSON.stringify({
-            error: { message: err instanceof Error ? err.message : String(err), type: "server_error", code: null },
-          })}\n\n`
-        );
-        res.write("data: [DONE]\n\n");
-        res.end();
-      }
+      const message = err instanceof Error ? err.message : String(err);
+      const status = err instanceof Error && err.name === "NoAccountAvailableError" ? 503 : 500;
+      sendError(res, { status, body: errorBody(message, "server_error", null) }, true);
       resolve();
     });
   });
@@ -699,17 +625,11 @@ async function handleNonStreamingResponse(
       }
       if (subprocess.hasAuthError()) {
         console.error("[Auth] Claude CLI authentication expired - user notified in chat");
-        res.json(authExpiredResponse(requestId, "claude-sonnet-4"));
+        sendError(res, AUTH_ERROR, false);
         resolve();
         return;
       }
-      res.status(500).json({
-        error: {
-          message: error.message,
-          type: "server_error",
-          code: null,
-        },
-      });
+      sendError(res, { status: 500, body: errorBody(error.message, "server_error", null) }, false);
       resolve();
     });
 
@@ -719,7 +639,19 @@ async function handleNonStreamingResponse(
         // stdout (no stderr signature) - catch it here and return guidance
         // instead of forwarding the raw error string as chat content.
         if (subprocess.hasAuthError() || isAuthError(finalResult.result || "", null)) {
-          res.json(authExpiredResponse(requestId, "claude-sonnet-4"));
+          console.error("[Auth] Claude CLI authentication expired - user notified in chat");
+          sendError(res, AUTH_ERROR, false);
+          resolve();
+          return;
+        }
+        // CLI failed before the model said anything: real HTTP error instead
+        // of a 200 whose "answer" is the error text (OpenWebUI's compaction
+        // would otherwise store that text as the chat summary)
+        const cliError = cliErrorInfo(finalResult);
+        if (cliError) {
+          if (sessionCtx.sessionKey) clearSession(sessionCtx.sessionKey);
+          logCliError("NonStreaming", cliError);
+          sendError(res, cliError, false);
           resolve();
           return;
         }
@@ -762,7 +694,7 @@ async function handleNonStreamingResponse(
         if (!res.headersSent) {
           if (subprocess.hasAuthError()) {
             console.error("[Auth] Claude CLI authentication expired - user notified in chat");
-            res.json(authExpiredResponse(requestId, "claude-sonnet-4"));
+            sendError(res, AUTH_ERROR, false);
           } else {
             res.status(500).json({
               error: {
@@ -790,13 +722,8 @@ async function handleNonStreamingResponse(
         systemPromptMode: cliInput.systemPromptMode,
       })
       .catch((error) => {
-        res.status(500).json({
-          error: {
-            message: error.message,
-            type: "server_error",
-            code: null,
-          },
-        });
+        const status = error instanceof Error && error.name === "NoAccountAvailableError" ? 503 : 500;
+        sendError(res, { status, body: errorBody(error.message, "server_error", null) }, false);
         resolve();
       });
   });

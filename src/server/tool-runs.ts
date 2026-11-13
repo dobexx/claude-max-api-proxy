@@ -44,7 +44,7 @@ import type {
   OpenAIToolDefinition,
 } from "../types/openai.js";
 import type { ClaudeCliMessage, ClaudeCliResult } from "../types/claude-cli.js";
-import { AUTH_EXPIRED_MESSAGE } from "./messages.js";
+import { AUTH_ERROR, cliErrorInfo, errorBody, logCliError, sseError, type CliErrorInfo } from "./errors.js";
 
 export type ToolMode = "mcp" | "prompt";
 
@@ -91,6 +91,8 @@ interface TurnSink {
   toolCallArgs(index: number, partial: string): void;
   finish(reason: FinishReason, usage?: Usage): void;
   fail(message: string): void;
+  /** Answer with a real error (HTTP status / SSE error event) */
+  error(info: CliErrorInfo): void;
   authExpired(): void;
   /** Called when the client disconnects before the sink finished */
   onClientGone(cb: () => void): void;
@@ -184,17 +186,21 @@ class StreamingSink implements TurnSink {
   }
 
   fail(message: string): void {
-    if (!this.finished && !this.res.writableEnded) {
-      this.res.write(
-        `data: ${JSON.stringify({ error: { message, type: "server_error", code: null } })}\n\n`
-      );
+    this.error({ status: 500, body: errorBody(message, "server_error", null) });
+  }
+
+  error(info: CliErrorInfo): void {
+    if (this.finished) return;
+    this.finished = true;
+    if (!this.res.writableEnded) {
+      this.res.write(sseError(info));
+      this.res.end();
     }
-    this.end();
+    this.resolveDone();
   }
 
   authExpired(): void {
-    this.text(AUTH_EXPIRED_MESSAGE);
-    this.finish("stop");
+    this.error(AUTH_ERROR);
   }
 }
 
@@ -273,18 +279,18 @@ class NonStreamingSink implements TurnSink {
   }
 
   fail(message: string): void {
+    this.error({ status: 500, body: errorBody(message, "server_error", null) });
+  }
+
+  error(info: CliErrorInfo): void {
     if (this.finished) return;
     this.finished = true;
-    if (!this.res.headersSent) {
-      this.res.status(500).json({ error: { message, type: "server_error", code: null } });
-    }
+    if (!this.res.headersSent) this.res.status(info.status).json(info.body);
     this.resolveDone();
   }
 
   authExpired(): void {
-    this.content = AUTH_EXPIRED_MESSAGE;
-    this.toolCalls = [];
-    this.finish("stop");
+    this.error(AUTH_ERROR);
   }
 }
 
@@ -554,11 +560,18 @@ class ToolRun {
     const sink = this.sink;
     const authFailed = isAuthError(result.result || "", null) || this.subprocess.hasAuthError();
     if (sink && !sink.finished) {
+      const cliError = cliErrorInfo(result);
       if (authFailed) {
+        console.error("[Auth] Claude CLI authentication expired - user notified in chat");
         sink.authExpired();
+      } else if (cliError && !sink.emittedText && !sink.emittedToolCalls) {
+        // Failed before the model said anything in this turn: a real error
+        // instead of the error text dressed up as the assistant's reply
+        logCliError(`ToolRun ${this.runId}`, cliError);
+        sink.error(cliError);
       } else {
-        // Errors/early results may never have been streamed as deltas
-        if (!sink.emittedText && !sink.emittedToolCalls && result.result) {
+        // Early results may never have been streamed as deltas
+        if (!sink.emittedText && !sink.emittedToolCalls && result.result && !result.is_error) {
           sink.text(result.result);
         }
         // The result's usage is summed over every model call of the run;

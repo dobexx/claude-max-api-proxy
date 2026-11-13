@@ -192,7 +192,9 @@ export class RoutedSubprocess extends EventEmitter {
     this.committed = true;
     const a = this.account;
     if (a && this.chatKey) bindChat(this.chatKey, a);
-    if (a && (this.pickChanged || this.failover)) {
+    // Requests without a chat key (OpenWebUI background tasks) are only
+    // logged when they had to fail over - a placement is no news for them
+    if (a && ((this.chatKey && this.pickChanged) || this.failover)) {
       const chat = this.chatKey ? `chat ${this.chatKey.slice(0, 8)}` : "request";
       const reason = this.failover ? `failover: ${this.failover}` : this.pickReason;
       console.log(`[Accounts] ${chat} -> ${a.name} (${reason}) | ${utilizationSummary()}`);
